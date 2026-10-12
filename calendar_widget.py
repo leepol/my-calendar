@@ -4,6 +4,7 @@ import json
 import datetime
 import requests
 from icalendar import Calendar
+from dateutil.rrule import rrulestr
 from PyQt6 import QtCore, QtGui, QtWidgets
 import ctypes
 
@@ -31,7 +32,6 @@ class OneUICalendar(QtWidgets.QWidget):
         self.current_date = datetime.date.today()
         self.click_through_enabled = False
 
-        # 크기 조절 시 자동 저장을 위한 타이머
         self.save_timer = QtCore.QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.timeout.connect(self.save_current_size)
@@ -160,7 +160,7 @@ class OneUICalendar(QtWidgets.QWidget):
 
         outer_layout.addWidget(self.main_frame)
 
-        # 우측 하단 크기 조절 손잡이 (Size Grip)
+        # 크기 조절 손잡이
         self.size_grip = QtWidgets.QSizeGrip(self)
         self.size_grip.resize(20, 20)
         self.size_grip.setStyleSheet("""
@@ -179,11 +179,9 @@ class OneUICalendar(QtWidgets.QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'size_grip'):
-            # 손잡이를 항상 우측 맨 아래에 배치
             self.size_grip.move(self.width() - 26, self.height() - 26)
             self.size_grip.raise_()
         if hasattr(self, 'save_timer'):
-            # 조절이 멈추고 0.5초 뒤 크기 자동 저장
             self.save_timer.start(500)
 
     def update_header(self):
@@ -336,13 +334,61 @@ class OneUICalendar(QtWidgets.QWidget):
             if res.status_code == 200:
                 cal = Calendar.from_ical(res.text)
                 new_events = {}
+
+                # 과거 1년 ~ 미래 2년 범위의 반복 일정을 모두 계산
+                now = datetime.datetime.now()
+                range_start = now - datetime.timedelta(days=365)
+                range_end = now + datetime.timedelta(days=730)
+
                 for component in cal.walk():
                     if component.name == "VEVENT":
                         summary = str(component.get("summary", "일정"))
-                        dtstart = component.get("dtstart").dt
-                        if isinstance(dtstart, datetime.datetime):
-                            dtstart = dtstart.date()
-                        new_events.setdefault(dtstart, []).append(summary)
+                        dtstart_prop = component.get("dtstart")
+                        if not dtstart_prop:
+                            continue
+                        dtstart = dtstart_prop.dt
+
+                        rrule_prop = component.get("rrule")
+                        if rrule_prop:
+                            try:
+                                if isinstance(dtstart, datetime.datetime):
+                                    dt_base = dtstart.replace(tzinfo=None)
+                                else:
+                                    dt_base = datetime.datetime.combine(dtstart, datetime.time.min)
+
+                                if hasattr(rrule_prop, "to_ical"):
+                                    rrule_str = rrule_prop.to_ical().decode("utf-8")
+                                else:
+                                    rrule_str = str(rrule_prop)
+
+                                rule = rrulestr(rrule_str, dtstart=dt_base, ignoretz=True)
+
+                                # 예외로 삭제/변경된 날짜(EXDATE) 확인
+                                exdates = set()
+                                ex_prop = component.get("exdate")
+                                if ex_prop:
+                                    if not isinstance(ex_prop, list):
+                                        ex_prop = [ex_prop]
+                                    for ex_item in ex_prop:
+                                        dts_list = getattr(ex_item, "dts", [ex_item])
+                                        for dts in dts_list:
+                                            d_val = getattr(dts, "dt", dts)
+                                            if isinstance(d_val, datetime.datetime):
+                                                exdates.add(d_val.date())
+                                            elif isinstance(d_val, datetime.date):
+                                                exdates.add(d_val)
+
+                                for occ in rule.between(range_start, range_end, inc=True):
+                                    occ_date = occ.date()
+                                    if occ_date not in exdates:
+                                        new_events.setdefault(occ_date, []).append(summary)
+                            except Exception:
+                                d = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
+                                new_events.setdefault(d, []).append(summary)
+                        else:
+                            d = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
+                            new_events.setdefault(d, []).append(summary)
+
                 self.events = new_events
                 self.render_calendar()
         except Exception:
