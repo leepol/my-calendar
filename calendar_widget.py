@@ -9,36 +9,23 @@ import ctypes
 
 CONFIG_FILE = "calendar_config.json"
 
-# One UI 파스텔 컬러 팔레트
-ONE_UI_PALETTE = [
-    {"bg": "rgba(10, 132, 255, 0.28)", "border": "#0A84FF"},   # 블루
-    {"bg": "rgba(48, 209, 88, 0.25)", "border": "#30D158"},    # 민트/초록
-    {"bg": "rgba(255, 159, 10, 0.28)", "border": "#FF9F0A"},   # 오렌지
-    {"bg": "rgba(191, 90, 242, 0.28)", "border": "#BF5AF2"},   # 퍼플
-    {"bg": "rgba(255, 69, 58, 0.28)", "border": "#FF453A"},    # 코랄/레드
-    {"bg": "rgba(100, 210, 255, 0.28)", "border": "#64D2FF"},  # 시안
-    {"bg": "rgba(255, 214, 10, 0.28)", "border": "#FFD60A"},   # 옐로우
-    {"bg": "rgba(255, 55, 95, 0.28)", "border": "#FF375F"},    # 핑크
-]
+# 선택 가능한 One UI 컬러 팔레트
+PRESET_COLORS = {
+    "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
+    "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
+    "초록": ("rgba(48, 209, 88, 0.35)", "#30D158"),
+    "주황": ("rgba(255, 159, 10, 0.35)", "#FF9F0A"),
+    "보라": ("rgba(191, 90, 242, 0.35)", "#BF5AF2"),
+    "노랑": ("rgba(255, 214, 10, 0.35)", "#FFD60A"),
+    "분홍": ("rgba(255, 55, 95, 0.35)", "#FF375F"),
+    "하늘": ("rgba(100, 210, 255, 0.35)", "#64D2FF"),
+    "회색": ("rgba(142, 142, 147, 0.35)", "#8E8E93"),
+}
 
-def get_event_color(summary):
-    s = str(summary).strip().lower()
-    if any(k in s for k in ["당직", "야간", "철야", "근무", "중요", "마감"]):
-        return "rgba(255, 69, 58, 0.32)", "#FF453A"
-    if any(k in s for k in ["휴무", "비번", "휴가", "연차", "쉬는날"]):
-        return "rgba(48, 209, 88, 0.28)", "#30D158"
-    if any(k in s for k in ["생일", "기념일", "축하"]):
-        return "rgba(255, 55, 95, 0.32)", "#FF375F"
-    if any(k in s for k in ["회의", "미팅", "약속"]):
-        return "rgba(255, 159, 10, 0.32)", "#FF9F0A"
-    if any(k in s for k in ["운동", "헬스", "러닝", "수영"]):
-        return "rgba(100, 210, 255, 0.30)", "#64D2FF"
-
-    idx = abs(hash(s)) % len(ONE_UI_PALETTE)
-    return ONE_UI_PALETTE[idx]["bg"], ONE_UI_PALETTE[idx]["border"]
+# 기본 일정 색상 (차분한 One UI 블루)
+DEFAULT_EVENT_COLOR = ("rgba(44, 117, 255, 0.30)", "#2C75FF")
 
 def expand_recurrence(dtstart, rrule_val, exdates, range_start, range_end):
-    """외부 라이브러리 없이 6일 주기 및 기본 반복 일정을 자체 계산하는 함수"""
     dates = []
     try:
         base_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
@@ -129,20 +116,40 @@ class OneUICalendar(QtWidgets.QWidget):
         self.init_ui()
         self.init_tray()
 
-        # 10분마다 iCal 자동 동기화
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.fetch_ical_events)
         self.timer.start(10 * 60 * 1000)
 
-        # 화면이 켜진 직후 0.1초 뒤 일정을 읽어오도록 지연 실행 (창 멈춤 방지)
         QtCore.QTimer.singleShot(100, self.fetch_ical_events)
 
     def load_config(self):
-        default = {"ical_url": "", "opacity": 0.85, "width": 1100, "height": 750}
+        default = {
+            "ical_url": "",
+            "opacity": 0.85,
+            "width": 1100,
+            "height": 750,
+            "custom_colors": {
+                "당직": "빨강",
+                "야간": "빨강",
+                "비번": "초록",
+                "휴무": "초록",
+                "주간": "파랑"
+            }
+        }
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    return {**default, **json.load(f)}
+                    loaded = json.load(f)
+                    default.update(loaded)
+                    if "custom_colors" not in default:
+                        default["custom_colors"] = {
+                            "당직": "빨강",
+                            "야간": "빨강",
+                            "비번": "초록",
+                            "휴무": "초록",
+                            "주간": "파랑"
+                        }
+                    return default
             except Exception:
                 pass
         return default
@@ -155,6 +162,16 @@ class OneUICalendar(QtWidgets.QWidget):
         self.config["width"] = self.width()
         self.config["height"] = self.height()
         self.save_config()
+
+    def get_event_color(self, summary):
+        s = str(summary).strip()
+        custom_map = self.config.get("custom_colors", {})
+        # 사용자가 설정한 단어가 일정 제목에 포함되어 있는지 확인
+        for keyword, color_name in custom_map.items():
+            if keyword in s:
+                if color_name in PRESET_COLORS:
+                    return PRESET_COLORS[color_name]
+        return DEFAULT_EVENT_COLOR
 
     def init_window(self):
         self.setWindowFlags(
@@ -192,7 +209,6 @@ class OneUICalendar(QtWidgets.QWidget):
         layout.setContentsMargins(28, 22, 28, 24)
         layout.setSpacing(12)
 
-        # 상단 헤더
         header = QtWidgets.QHBoxLayout()
         self.header_title = QtWidgets.QLabel()
         self.header_title.setStyleSheet("color: #FFFFFF; font-size: 26px; font-weight: bold;")
@@ -230,7 +246,6 @@ class OneUICalendar(QtWidgets.QWidget):
         header.addWidget(btn_next)
         layout.addLayout(header)
 
-        # 요일 바
         weekdays_bar = QtWidgets.QHBoxLayout()
         weekdays_bar.setContentsMargins(0, 4, 0, 4)
         days = ["일", "월", "화", "수", "목", "금", "토"]
@@ -243,14 +258,12 @@ class OneUICalendar(QtWidgets.QWidget):
             weekdays_bar.addWidget(lbl, 1)
         layout.addLayout(weekdays_bar)
 
-        # 날짜 그리드
         self.grid = QtWidgets.QGridLayout()
         self.grid.setSpacing(8)
         layout.addLayout(self.grid, 1)
 
         outer_layout.addWidget(self.main_frame)
 
-        # 우측 하단 크기 조절 손잡이
         self.size_grip = QtWidgets.QSizeGrip(self)
         self.size_grip.resize(20, 20)
         self.size_grip.setStyleSheet("""
@@ -356,10 +369,10 @@ class OneUICalendar(QtWidgets.QWidget):
 
                     cell_layout.addWidget(lbl_day)
 
-                    # 알록달록 One UI 일정 표시
+                    # 지정 색상 매핑
                     ev_list = self.events.get(this_date, [])
                     for ev in ev_list[:2]:
-                        bg_col, border_col = get_event_color(ev)
+                        bg_col, border_col = self.get_event_color(ev)
                         ev_lbl = QtWidgets.QLabel(f" {ev}")
                         ev_lbl.setStyleSheet(f"""
                             background-color: {bg_col};
@@ -481,6 +494,12 @@ class OneUICalendar(QtWidgets.QWidget):
         act_url = menu.addAction("구글 캘린더 iCal 주소 설정")
         act_url.triggered.connect(self.set_ical_url)
 
+        act_color_config = menu.addAction("일정 색상 설정 (메모장 열기)")
+        act_color_config.triggered.connect(self.open_color_config)
+
+        act_refresh = menu.addAction("일정 및 색상 즉시 새로고침")
+        act_refresh.triggered.connect(self.reload_all)
+
         act_size = menu.addAction("창 크기 직접 설정 (가로x세로)")
         act_size.triggered.connect(self.set_window_size)
 
@@ -493,6 +512,20 @@ class OneUICalendar(QtWidgets.QWidget):
 
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def open_color_config(self):
+        self.save_config()
+        path = os.path.abspath(CONFIG_FILE)
+        try:
+            os.system(f'notepad.exe "{path}"')
+        except Exception:
+            pass
+
+    def reload_all(self):
+        self.config = self.load_config()
+        self.fetch_ical_events()
+        self.render_calendar()
+        self.tray.showMessage("One UI Calendar", "설정과 일정을 새로고침했습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
 
     def toggle_click_through(self):
         self.click_through_enabled = not self.click_through_enabled
