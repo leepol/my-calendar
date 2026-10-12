@@ -9,7 +9,7 @@ import ctypes
 
 CONFIG_FILE = "calendar_config.json"
 
-# One UI 컬러 팔레트 (배경 투명도 / 테두리 및 텍스트 포인트)
+# One UI 컬러 팔레트
 PRESET_COLORS = {
     "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
     "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
@@ -29,12 +29,8 @@ def expand_recurrence(dtstart, rrule_val, exdates, range_start, range_end):
     try:
         base_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
         rrule_str = rrule_val.to_ical().decode("utf-8") if hasattr(rrule_val, "to_ical") else str(rrule_val)
-
-        params = {}
-        for item in rrule_str.split(";"):
-            if "=" in item:
-                k, v = item.split("=", 1)
-                params[k.upper()] = v
+        params = dict(item.split("=", 1) for item in rrule_str.split(";") if "=" in item)
+        params = {k.upper(): v for k, v in params.items()}
 
         freq = params.get("FREQ", "DAILY").upper()
         interval = int(params.get("INTERVAL", 1))
@@ -42,9 +38,9 @@ def expand_recurrence(dtstart, rrule_val, exdates, range_start, range_end):
 
         until_date = None
         if "UNTIL" in params:
-            u_str = params["UNTIL"]
+            u = params["UNTIL"]
             try:
-                until_date = datetime.date(int(u_str[:4]), int(u_str[4:6]), int(u_str[6:8]))
+                until_date = datetime.date(int(u[:4]), int(u[4:6]), int(u[6:8]))
             except Exception:
                 pass
 
@@ -313,7 +309,6 @@ class OneUICalendar(QtWidgets.QWidget):
         self.config = self.load_config()
         self.events = {}
         self.current_date = datetime.date.today()
-        # 설정에 저장된 관통 모드 여부 불러오기
         self.click_through_enabled = self.config.get("click_through", False)
 
         self.save_timer = QtCore.QTimer(self)
@@ -330,7 +325,6 @@ class OneUICalendar(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(100, self.fetch_ical_events)
 
-        # 윈도우가 켜진 직후 이전 관통 모드 상태 자동 복원
         if self.click_through_enabled:
             QtCore.QTimer.singleShot(250, self.apply_initial_click_through)
 
@@ -344,378 +338,4 @@ class OneUICalendar(QtWidgets.QWidget):
             "y": None,
             "click_through": False,
             "local_events": {},
-            "custom_colors": {
-                "조사": "주황",
-                "당직": "빨강",
-                "야간": "빨강",
-                "비번": "회색",
-                "휴무": "초록",
-                "주간": "파랑"
-            }
-        }
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                    default.update(loaded)
-                    if "custom_colors" not in default:
-                        default["custom_colors"] = {
-                            "조사": "주황",
-                            "당직": "빨강",
-                            "야간": "빨강",
-                            "비번": "회색",
-                            "휴무": "초록",
-                            "주간": "파랑"
-                        }
-                    if "local_events" not in default:
-                        default["local_events"] = {}
-                    return default
-            except Exception:
-                pass
-        return default
-
-    def save_config(self):
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, ensure_ascii=False, indent=2)
-
-    def save_current_geometry(self):
-        self.config["width"] = self.width()
-        self.config["height"] = self.height()
-        self.config["x"] = self.x()
-        self.config["y"] = self.y()
-        self.save_config()
-
-    def get_event_color(self, summary):
-        s = str(summary).strip()
-        custom_map = self.config.get("custom_colors", {})
-        for keyword, color_name in custom_map.items():
-            if keyword in s:
-                if color_name in PRESET_COLORS:
-                    return PRESET_COLORS[color_name]
-        return DEFAULT_EVENT_COLOR
-
-    def init_window(self):
-        self.setWindowFlags(
-            QtCore.Qt.WindowType.FramelessWindowHint |
-            QtCore.Qt.WindowType.WindowStaysOnBottomHint |
-            QtCore.Qt.WindowType.Tool
-        )
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumSize(600, 450)
-        self.resize(self.config.get("width", 1100), self.config.get("height", 750))
-
-        x = self.config.get("x")
-        y = self.config.get("y")
-        if x is not None and y is not None:
-            self.move(int(x), int(y))
-
-    def apply_initial_click_through(self):
-        hwnd = int(self.winId())
-        Win32Helper.set_click_through(hwnd, True)
-
-    def get_container_style(self, opacity):
-        return f"""
-            #MainFrame {{
-                background-color: rgba(24, 24, 26, {opacity});
-                border-radius: 24px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }}
-            QLabel {{
-                background-color: transparent;
-                border: none;
-                font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
-            }}
-        """
-
-    def init_ui(self):
-        outer_layout = QtWidgets.QVBoxLayout(self)
-        outer_layout.setContentsMargins(15, 15, 15, 15)
-
-        self.main_frame = QtWidgets.QFrame()
-        self.main_frame.setObjectName("MainFrame")
-        self.main_frame.setStyleSheet(self.get_container_style(self.config.get("opacity", 0.85)))
-
-        layout = QtWidgets.QVBoxLayout(self.main_frame)
-        layout.setContentsMargins(28, 22, 28, 24)
-        layout.setSpacing(12)
-
-        header = QtWidgets.QHBoxLayout()
-        self.header_title = QtWidgets.QLabel()
-        self.header_title.setStyleSheet("color: #FFFFFF; font-size: 26px; font-weight: bold;")
-        self.update_header()
-        header.addWidget(self.header_title)
-        header.addStretch()
-
-        btn_prev = QtWidgets.QPushButton("<")
-        btn_today = QtWidgets.QPushButton("오늘")
-        btn_next = QtWidgets.QPushButton(">")
-
-        btn_style = """
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.12);
-                color: #FFFFFF;
-                border: none;
-                border-radius: 12px;
-                padding: 6px 14px;
-                font-size: 13px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.22);
-            }
-        """
-        for b in (btn_prev, btn_today, btn_next):
-            b.setStyleSheet(btn_style)
-
-        btn_prev.clicked.connect(self.prev_month)
-        btn_today.clicked.connect(self.go_today)
-        btn_next.clicked.connect(self.next_month)
-
-        header.addWidget(btn_prev)
-        header.addWidget(btn_today)
-        header.addWidget(btn_next)
-        layout.addLayout(header)
-
-        weekdays_bar = QtWidgets.QHBoxLayout()
-        weekdays_bar.setContentsMargins(0, 4, 0, 4)
-        days = ["일", "월", "화", "수", "목", "금", "토"]
-        for i, d in enumerate(days):
-            lbl = QtWidgets.QLabel(d)
-            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            lbl.setFixedHeight(24)
-            color = "#FF453A" if i == 0 else ("#0A84FF" if i == 6 else "#98989D")
-            lbl.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
-            weekdays_bar.addWidget(lbl, 1)
-        layout.addLayout(weekdays_bar)
-
-        self.grid = QtWidgets.QGridLayout()
-        self.grid.setSpacing(8)
-        layout.addLayout(self.grid, 1)
-
-        outer_layout.addWidget(self.main_frame)
-
-        self.size_grip = QtWidgets.QSizeGrip(self)
-        self.size_grip.resize(20, 20)
-        self.size_grip.setStyleSheet("""
-            QSizeGrip {
-                background-color: rgba(255, 255, 255, 0.15);
-                border-radius: 4px;
-                margin: 3px;
-            }
-            QSizeGrip:hover {
-                background-color: #0072DE;
-            }
-        """)
-
-        self.render_calendar()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'size_grip'):
-            self.size_grip.move(self.width() - 26, self.height() - 26)
-            self.size_grip.raise_()
-        if hasattr(self, 'save_timer'):
-            self.save_timer.start(500)
-
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        if hasattr(self, 'save_timer'):
-            self.save_timer.start(500)
-
-    def update_header(self):
-        self.header_title.setText(f"{self.current_date.year}년 {self.current_date.month}월")
-
-    def open_day_dialog(self, target_date):
-        dlg = DayEventDialog(target_date, self)
-        dlg.exec()
-
-    def render_calendar(self):
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        year = self.current_date.year
-        month = self.current_date.month
-        first_day = datetime.date(year, month, 1)
-        start_weekday = (first_day.weekday() + 1) % 7
-
-        days_in_month = (datetime.date(year + (month // 12), (month % 12) + 1, 1) - datetime.timedelta(days=1)).day
-        prev_month_days = (first_day - datetime.timedelta(days=1)).day
-        today = datetime.date.today()
-
-        local_events = self.config.get("local_events", {})
-
-        for r in range(6):
-            self.grid.setRowStretch(r, 1)
-        for c in range(7):
-            self.grid.setColumnStretch(c, 1)
-
-        day_counter = 1
-        next_month_counter = 1
-
-        for row in range(6):
-            for col in range(7):
-                idx = row * 7 + col
-
-                if idx < start_weekday:
-                    p_day = prev_month_days - (start_weekday - idx - 1)
-                    p_date = (first_day - datetime.timedelta(days=start_weekday - idx))
-                    cell = DayCell(p_date, self)
-                    cell_layout = QtWidgets.QVBoxLayout(cell)
-                    cell_layout.setContentsMargins(8, 8, 8, 8)
-                    cell_layout.setSpacing(4)
-                    cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-
-                    lbl_day = QtWidgets.QLabel(str(p_day))
-                    lbl_day.setStyleSheet("color: rgba(255, 255, 255, 0.2); font-size: 13px; font-weight: bold;")
-                    cell_layout.addWidget(lbl_day)
-                    cell.setStyleSheet("""
-                        DayCell {
-                            background-color: rgba(255, 255, 255, 0.02);
-                            border-radius: 14px;
-                            border: 1px solid rgba(255, 255, 255, 0.02);
-                        }
-                    """)
-                elif day_counter <= days_in_month:
-                    this_date = datetime.date(year, month, day_counter)
-                    cell = DayCell(this_date, self)
-                    cell_layout = QtWidgets.QVBoxLayout(cell)
-                    cell_layout.setContentsMargins(8, 8, 8, 8)
-                    cell_layout.setSpacing(4)
-                    cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-
-                    lbl_day = QtWidgets.QLabel(str(day_counter))
-                    is_today = (this_date == today)
-
-                    if is_today:
-                        lbl_day.setStyleSheet("""
-                            color: #FFFFFF;
-                            background-color: #0072DE;
-                            border-radius: 8px;
-                            padding: 2px 7px;
-                            font-size: 12px;
-                            font-weight: bold;
-                        """)
-                        cell.setStyleSheet("""
-                            DayCell {
-                                background-color: rgba(0, 114, 222, 0.12);
-                                border-radius: 14px;
-                                border: 1.5px solid rgba(0, 114, 222, 0.5);
-                            }
-                        """)
-                    else:
-                        color = "#FF453A" if col == 0 else ("#0A84FF" if col == 6 else "#E5E5EA")
-                        lbl_day.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
-                        cell.setStyleSheet("""
-                            DayCell {
-                                background-color: rgba(255, 255, 255, 0.04);
-                                border-radius: 14px;
-                                border: 1px solid rgba(255, 255, 255, 0.03);
-                            }
-                            DayCell:hover {
-                                background-color: rgba(255, 255, 255, 0.08);
-                                border: 1px solid rgba(255, 255, 255, 0.1);
-                            }
-                        """)
-
-                    cell_layout.addWidget(lbl_day)
-
-                    rendered_items = []
-                    for gev in self.events.get(this_date, []):
-                        bg_col, border_col = self.get_event_color(gev)
-                        rendered_items.append((gev, bg_col, border_col))
-
-                    d_str = this_date.strftime("%Y-%m-%d")
-                    for lev in local_events.get(d_str, []):
-                        if isinstance(lev, dict):
-                            title = lev.get("title", "")
-                            c_name = lev.get("color", "파랑")
-                            bg_col, border_col = PRESET_COLORS.get(c_name, DEFAULT_EVENT_COLOR)
-                        else:
-                            title = str(lev)
-                            bg_col, border_col = self.get_event_color(title)
-                        rendered_items.append((title, bg_col, border_col))
-
-                    for title, bg_col, border_col in rendered_items[:2]:
-                        ev_lbl = QtWidgets.QLabel(f" {title}")
-                        ev_lbl.setStyleSheet(f"""
-                            background-color: {bg_col};
-                            color: #FFFFFF;
-                            border-left: 3px solid {border_col};
-                            border-radius: 4px;
-                            font-size: 11px;
-                            padding: 2px 4px;
-                            font-weight: 500;
-                        """)
-                        cell_layout.addWidget(ev_lbl)
-
-                    if len(rendered_items) > 2:
-                        more_lbl = QtWidgets.QLabel(f"+{len(rendered_items)-2}개")
-                        more_lbl.setStyleSheet("color: #8E8E93; font-size: 10px;")
-                        cell_layout.addWidget(more_lbl)
-
-                    day_counter += 1
-                else:
-                    n_date = datetime.date(year + (month // 12), (month % 12) + 1, next_month_counter)
-                    cell = DayCell(n_date, self)
-                    cell_layout = QtWidgets.QVBoxLayout(cell)
-                    cell_layout.setContentsMargins(8, 8, 8, 8)
-                    cell_layout.setSpacing(4)
-                    cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-
-                    lbl_day = QtWidgets.QLabel(str(next_month_counter))
-                    lbl_day.setStyleSheet("color: rgba(255, 255, 255, 0.2); font-size: 13px; font-weight: bold;")
-                    cell_layout.addWidget(lbl_day)
-                    cell.setStyleSheet("""
-                        DayCell {
-                            background-color: rgba(255, 255, 255, 0.02);
-                            border-radius: 14px;
-                            border: 1px solid rgba(255, 255, 255, 0.02);
-                        }
-                    """)
-                    next_month_counter += 1
-
-                self.grid.addWidget(cell, row, col)
-
-    def prev_month(self):
-        m = self.current_date.month - 1
-        y = self.current_date.year
-        if m < 1:
-            m = 12
-            y -= 1
-        self.current_date = datetime.date(y, m, 1)
-        self.update_header()
-        self.render_calendar()
-
-    def next_month(self):
-        m = self.current_date.month + 1
-        y = self.current_date.year
-        if m > 12:
-            m = 1
-            y += 1
-        self.current_date = datetime.date(y, m, 1)
-        self.update_header()
-        self.render_calendar()
-
-    def go_today(self):
-        self.current_date = datetime.date.today()
-        self.update_header()
-        self.render_calendar()
-
-    def fetch_ical_events(self):
-        url = self.config.get("ical_url", "").strip()
-        if not url:
-            return
-        try:
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                cal = Calendar.from_ical(res.text)
-                new_events = {}
-
-                today = datetime.date.today()
-                range_start = today - datetime.timedelta(days=180)
-                range_end = today + datetime.timedelta(days=365)
-
-                for component in cal.walk():
-                    if component.name == "VEVENT
+            "custom
