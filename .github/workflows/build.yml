@@ -1,0 +1,30 @@
+name: Build Calendar EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Libraries
+        run: |
+          pip install PyQt6 requests icalendar pyinstaller
+
+      - name: Build Standalone EXE
+        run: |
+          pyinstaller --noconsole --onefile calendar_widget.py
+
+      - name: Upload Finished EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: OneUI-Desktop-Calendar
+          path: dist/calendar_widget.exe
