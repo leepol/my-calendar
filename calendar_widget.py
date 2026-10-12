@@ -245,15 +245,12 @@ class DayEventDialog(QtWidgets.QDialog):
         self.list_widget = QtWidgets.QListWidget()
         layout.addWidget(self.list_widget)
 
-        # 1행: 일정 이름 입력
         self.input_text = QtWidgets.QLineEdit()
         self.input_text.setPlaceholderText("새 일정 입력 (예: 순환근무, 당직, 조사)")
         self.input_text.returnPressed.connect(self.add_event)
         layout.addWidget(self.input_text)
 
-        # 2행: 반복 주기 + 색상 선택 + 추가 버튼
         control_row = QtWidgets.QHBoxLayout()
-
         self.combo_repeat = QtWidgets.QComboBox()
         repeat_options = [
             "반복 안함", "1일 간격", "2일 간격", "3일 간격",
@@ -276,7 +273,6 @@ class DayEventDialog(QtWidgets.QDialog):
         control_row.addWidget(btn_add, 2)
         layout.addLayout(control_row)
 
-        # 하단 버튼 (삭제 및 닫기)
         btn_layout = QtWidgets.QHBoxLayout()
         btn_del = QtWidgets.QPushButton("선택한 일정 삭제")
         btn_del.setStyleSheet("""
@@ -304,8 +300,6 @@ class DayEventDialog(QtWidgets.QDialog):
 
     def load_items(self):
         self.list_widget.clear()
-
-        # 1. 구글 동기화 일정 (읽기 전용)
         g_events = self.parent_cal.events.get(self.target_date, [])
         for gev in g_events:
             item = QtWidgets.QListWidgetItem(f"🌐 [구글] {gev}")
@@ -313,7 +307,6 @@ class DayEventDialog(QtWidgets.QDialog):
             item.setForeground(QtGui.QColor("#8E8E93"))
             self.list_widget.addItem(item)
 
-        # 2. PC 단일 일정
         local_map = self.parent_cal.config.get("local_events", {})
         l_events = local_map.get(self.date_str, [])
         for idx, lev in enumerate(l_events):
@@ -328,7 +321,6 @@ class DayEventDialog(QtWidgets.QDialog):
             item.setData(QtCore.Qt.ItemDataRole.UserRole, ("single", idx, title))
             self.list_widget.addItem(item)
 
-        # 3. PC 반복 일정
         recurring_list = self.parent_cal.config.get("recurring_events", [])
         for rec in recurring_list:
             if is_recurring_on_date(rec, self.target_date):
@@ -442,6 +434,7 @@ class OneUICalendar(QtWidgets.QWidget):
             "x": None,
             "y": None,
             "click_through": False,
+            "default_color": "파랑",
             "local_events": {},
             "recurring_events": [],
             "custom_colors": {
@@ -471,6 +464,8 @@ class OneUICalendar(QtWidgets.QWidget):
                         default["local_events"] = {}
                     if "recurring_events" not in default:
                         default["recurring_events"] = []
+                    if "default_color" not in default:
+                        default["default_color"] = "파랑"
                     return default
             except Exception:
                 pass
@@ -490,11 +485,14 @@ class OneUICalendar(QtWidgets.QWidget):
     def get_event_color(self, summary):
         s = str(summary).strip()
         custom_map = self.config.get("custom_colors", {})
+        # 1. 키워드 매칭 우선
         for keyword, color_name in custom_map.items():
             if keyword in s:
                 if color_name in PRESET_COLORS:
                     return PRESET_COLORS[color_name]
-        return DEFAULT_EVENT_COLOR
+        # 2. 키워드가 없는 일반 일정은 설정된 default_color 적용
+        def_color_name = self.config.get("default_color", "파랑")
+        return PRESET_COLORS.get(def_color_name, DEFAULT_EVENT_COLOR)
 
     def init_window(self):
         self.setWindowFlags(
@@ -725,13 +723,12 @@ class OneUICalendar(QtWidgets.QWidget):
                     cell_layout.addWidget(lbl_day)
 
                     rendered_items = []
-
-                    # 1. 구글 일정 (키워드 자동 색상)
+                    # 1. 구글 일정 (키워드 규칙 우선, 없으면 default_color)
                     for gev in self.events.get(this_date, []):
                         bg_col, border_col = self.get_event_color(gev)
                         rendered_items.append((gev, bg_col, border_col))
 
-                    # 2. PC 단일 일정 (사용자 선택 색상)
+                    # 2. PC 단일 일정
                     d_str = this_date.strftime("%Y-%m-%d")
                     for lev in local_events.get(d_str, []):
                         if isinstance(lev, dict):
@@ -743,7 +740,7 @@ class OneUICalendar(QtWidgets.QWidget):
                             bg_col, border_col = self.get_event_color(title)
                         rendered_items.append((title, bg_col, border_col))
 
-                    # 3. PC 반복 일정 (사용자 선택 색상)
+                    # 3. PC 반복 일정
                     for rec in recurring_events:
                         if is_recurring_on_date(rec, this_date):
                             title = rec.get("title", "")
@@ -883,6 +880,10 @@ class OneUICalendar(QtWidgets.QWidget):
         act_url = menu.addAction("구글 캘린더 iCal 주소 설정")
         act_url.triggered.connect(self.set_ical_url)
 
+        # 기본 일정 색상 바로 변경 메뉴
+        act_def_color = menu.addAction("기본 일정 색상 변경")
+        act_def_color.triggered.connect(self.set_default_color)
+
         act_color_config = menu.addAction("일정 색상 설정 (메모장 열기)")
         act_color_config.triggered.connect(self.open_color_config)
 
@@ -901,6 +902,26 @@ class OneUICalendar(QtWidgets.QWidget):
 
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def set_default_color(self):
+        color_keys = list(PRESET_COLORS.keys())
+        cur_color = self.config.get("default_color", "파랑")
+        cur_idx = color_keys.index(cur_color) if cur_color in color_keys else 0
+
+        item, ok = QtWidgets.QInputDialog.getItem(
+            self, "기본 일정 색상 변경",
+            "키워드가 일치하지 않는 일반 일정의 기본 색상을 선택하세요:",
+            color_keys, cur_idx, False
+        )
+        if ok and item:
+            self.config["default_color"] = item
+            self.save_config()
+            self.render_calendar()
+            self.tray.showMessage(
+                "One UI Calendar",
+                f"기본 일정 색상이 '{item}'(으)로 변경되었습니다.",
+                QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500
+            )
 
     def open_color_config(self):
         self.save_config()
@@ -928,7 +949,7 @@ class OneUICalendar(QtWidgets.QWidget):
             self.act_toggle.setChecked(self.click_through_enabled)
 
         msg = "클릭 관통 모드 활성화 (아이콘 통과 클릭 가능)" if self.click_through_enabled else "클릭 관통 해제 (날짜 더블클릭으로 일정 입력 가능)"
-        self.tray.showMessage("One UI Calendar", msg, QtWidgets.QSystemTrayIcon.MessageIcon.Information, 2000)
+        self.tray.showMessage("One UI Calendar", msg, QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
 
     def set_ical_url(self):
         url, ok = QtWidgets.QInputDialog.getText(self, "iCal 설정", "구글 캘린더 비공개 iCal 주소를 입력하세요:", text=self.config.get("ical_url", ""))
