@@ -9,7 +9,7 @@ import ctypes
 
 CONFIG_FILE = "calendar_config.json"
 
-# 선택 가능한 One UI 컬러 팔레트
+# One UI 컬러 팔레트
 PRESET_COLORS = {
     "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
     "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
@@ -22,7 +22,6 @@ PRESET_COLORS = {
     "회색": ("rgba(142, 142, 147, 0.35)", "#8E8E93"),
 }
 
-# 기본 일정 색상 (차분한 One UI 블루)
 DEFAULT_EVENT_COLOR = ("rgba(44, 117, 255, 0.30)", "#2C75FF")
 
 def expand_recurrence(dtstart, rrule_val, exdates, range_start, range_end):
@@ -108,9 +107,10 @@ class OneUICalendar(QtWidgets.QWidget):
         self.current_date = datetime.date.today()
         self.click_through_enabled = False
 
+        # 크기 및 위치 변경 시 자동 저장을 위한 타이머
         self.save_timer = QtCore.QTimer(self)
         self.save_timer.setSingleShot(True)
-        self.save_timer.timeout.connect(self.save_current_size)
+        self.save_timer.timeout.connect(self.save_current_geometry)
 
         self.init_window()
         self.init_ui()
@@ -128,10 +128,12 @@ class OneUICalendar(QtWidgets.QWidget):
             "opacity": 0.85,
             "width": 1100,
             "height": 750,
+            "x": None,
+            "y": None,
             "custom_colors": {
                 "당직": "빨강",
                 "야간": "빨강",
-                "비번": "초록",
+                "비번": "회색",
                 "휴무": "초록",
                 "주간": "파랑"
             }
@@ -144,10 +146,12 @@ class OneUICalendar(QtWidgets.QWidget):
                     if "custom_colors" not in default:
                         default["custom_colors"] = {
                             "당직": "빨강",
-                            "야간": "빨강",
-                            "비번": "초록",
-                            "휴무": "초록",
-                            "주간": "파랑"
+                            "비번": "회색",
+                            "수1": "하늘",
+                            "수2": "하늘",
+                            "수3": "하늘",
+                            "수4": "하늘",
+                            "조사": "보라"
                         }
                     return default
             except Exception:
@@ -158,15 +162,16 @@ class OneUICalendar(QtWidgets.QWidget):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
 
-    def save_current_size(self):
+    def save_current_geometry(self):
         self.config["width"] = self.width()
         self.config["height"] = self.height()
+        self.config["x"] = self.x()
+        self.config["y"] = self.y()
         self.save_config()
 
     def get_event_color(self, summary):
         s = str(summary).strip()
         custom_map = self.config.get("custom_colors", {})
-        # 사용자가 설정한 단어가 일정 제목에 포함되어 있는지 확인
         for keyword, color_name in custom_map.items():
             if keyword in s:
                 if color_name in PRESET_COLORS:
@@ -182,6 +187,12 @@ class OneUICalendar(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(600, 450)
         self.resize(self.config.get("width", 1100), self.config.get("height", 750))
+
+        # 이전에 저장된 위치가 있으면 그 자리로 이동
+        x = self.config.get("x")
+        y = self.config.get("y")
+        if x is not None and y is not None:
+            self.move(int(x), int(y))
 
     def get_container_style(self, opacity):
         return f"""
@@ -287,6 +298,12 @@ class OneUICalendar(QtWidgets.QWidget):
         if hasattr(self, 'save_timer'):
             self.save_timer.start(500)
 
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, 'save_timer'):
+            # 창 이동이 끝나고 0.5초 뒤 새로운 X, Y 좌표를 자동 저장
+            self.save_timer.start(500)
+
     def update_header(self):
         self.header_title.setText(f"{self.current_date.year}년 {self.current_date.month}월")
 
@@ -369,7 +386,6 @@ class OneUICalendar(QtWidgets.QWidget):
 
                     cell_layout.addWidget(lbl_day)
 
-                    # 지정 색상 매핑
                     ev_list = self.events.get(this_date, [])
                     for ev in ev_list[:2]:
                         bg_col, border_col = self.get_event_color(ev)
@@ -552,7 +568,7 @@ class OneUICalendar(QtWidgets.QWidget):
                 w, h = int(parts[0]), int(parts[1])
                 if w >= 500 and h >= 400:
                     self.resize(w, h)
-                    self.save_current_size()
+                    self.save_current_geometry()
             except Exception:
                 pass
 
