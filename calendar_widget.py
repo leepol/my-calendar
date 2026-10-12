@@ -31,6 +31,11 @@ class OneUICalendar(QtWidgets.QWidget):
         self.current_date = datetime.date.today()
         self.click_through_enabled = False
 
+        # 크기 조절 시 자동 저장을 위한 타이머
+        self.save_timer = QtCore.QTimer(self)
+        self.save_timer.setSingleShot(True)
+        self.save_timer.timeout.connect(self.save_current_size)
+
         self.init_window()
         self.init_ui()
         self.init_tray()
@@ -43,7 +48,7 @@ class OneUICalendar(QtWidgets.QWidget):
         self.fetch_ical_events()
 
     def load_config(self):
-        default = {"ical_url": "", "opacity": 0.85, "width": 1050, "height": 720}
+        default = {"ical_url": "", "opacity": 0.85, "width": 1100, "height": 750}
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -56,6 +61,11 @@ class OneUICalendar(QtWidgets.QWidget):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
 
+    def save_current_size(self):
+        self.config["width"] = self.width()
+        self.config["height"] = self.height()
+        self.save_config()
+
     def init_window(self):
         self.setWindowFlags(
             QtCore.Qt.WindowType.FramelessWindowHint |
@@ -63,7 +73,8 @@ class OneUICalendar(QtWidgets.QWidget):
             QtCore.Qt.WindowType.Tool
         )
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.resize(self.config.get("width", 1050), self.config.get("height", 720))
+        self.setMinimumSize(600, 450)
+        self.resize(self.config.get("width", 1100), self.config.get("height", 750))
 
     def get_container_style(self, opacity):
         return f"""
@@ -129,7 +140,7 @@ class OneUICalendar(QtWidgets.QWidget):
         header.addWidget(btn_next)
         layout.addLayout(header)
 
-        # 요일 바 (고정 높이)
+        # 요일 바
         weekdays_bar = QtWidgets.QHBoxLayout()
         weekdays_bar.setContentsMargins(0, 4, 0, 4)
         days = ["일", "월", "화", "수", "목", "금", "토"]
@@ -148,7 +159,32 @@ class OneUICalendar(QtWidgets.QWidget):
         layout.addLayout(self.grid, 1)
 
         outer_layout.addWidget(self.main_frame)
+
+        # 우측 하단 크기 조절 손잡이 (Size Grip)
+        self.size_grip = QtWidgets.QSizeGrip(self)
+        self.size_grip.resize(20, 20)
+        self.size_grip.setStyleSheet("""
+            QSizeGrip {
+                background-color: rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                margin: 3px;
+            }
+            QSizeGrip:hover {
+                background-color: #0072DE;
+            }
+        """)
+
         self.render_calendar()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'size_grip'):
+            # 손잡이를 항상 우측 맨 아래에 배치
+            self.size_grip.move(self.width() - 26, self.height() - 26)
+            self.size_grip.raise_()
+        if hasattr(self, 'save_timer'):
+            # 조절이 멈추고 0.5초 뒤 크기 자동 저장
+            self.save_timer.start(500)
 
     def update_header(self):
         self.header_title.setText(f"{self.current_date.year}년 {self.current_date.month}월")
@@ -187,7 +223,6 @@ class OneUICalendar(QtWidgets.QWidget):
                 cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
                 if idx < start_weekday:
-                    # 이전 달 날짜
                     p_day = prev_month_days - (start_weekday - idx - 1)
                     lbl_day = QtWidgets.QLabel(str(p_day))
                     lbl_day.setStyleSheet("color: rgba(255, 255, 255, 0.2); font-size: 13px; font-weight: bold;")
@@ -233,7 +268,6 @@ class OneUICalendar(QtWidgets.QWidget):
 
                     cell_layout.addWidget(lbl_day)
 
-                    # 일정 표시
                     ev_list = self.events.get(this_date, [])
                     for ev in ev_list[:2]:
                         ev_lbl = QtWidgets.QLabel(f" {ev}")
@@ -254,7 +288,6 @@ class OneUICalendar(QtWidgets.QWidget):
 
                     day_counter += 1
                 else:
-                    # 다음 달 날짜
                     lbl_day = QtWidgets.QLabel(str(next_month_counter))
                     lbl_day.setStyleSheet("color: rgba(255, 255, 255, 0.2); font-size: 13px; font-weight: bold;")
                     cell_layout.addWidget(lbl_day)
@@ -327,6 +360,9 @@ class OneUICalendar(QtWidgets.QWidget):
         act_url = menu.addAction("구글 캘린더 iCal 주소 설정")
         act_url.triggered.connect(self.set_ical_url)
 
+        act_size = menu.addAction("창 크기 직접 설정 (가로x세로)")
+        act_size.triggered.connect(self.set_window_size)
+
         act_opacity = menu.addAction("투명도 변경")
         act_opacity.triggered.connect(self.change_opacity)
 
@@ -350,6 +386,21 @@ class OneUICalendar(QtWidgets.QWidget):
             self.config["ical_url"] = url.strip()
             self.save_config()
             self.fetch_ical_events()
+
+    def set_window_size(self):
+        text, ok = QtWidgets.QInputDialog.getText(
+            self, "창 크기 설정", "가로x세로 픽셀을 입력하세요 (예: 1300x850):",
+            text=f"{self.width()}x{self.height()}"
+        )
+        if ok and text:
+            try:
+                parts = text.lower().replace(" ", "").split("x")
+                w, h = int(parts[0]), int(parts[1])
+                if w >= 500 and h >= 400:
+                    self.resize(w, h)
+                    self.save_current_size()
+            except Exception:
+                pass
 
     def change_opacity(self):
         val, ok = QtWidgets.QInputDialog.getInt(self, "투명도 조절", "투명도 비율 (30 ~ 100%):", int(self.config.get("opacity", 0.85) * 100), 30, 100, 5)
