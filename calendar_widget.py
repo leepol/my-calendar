@@ -11,11 +11,19 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-CONFIG_FILE = "calendar_config.json"
-CREDENTIALS_FILE = "credentials.json"
-TOKEN_FILE = "token.json"
+# 실행 파일(.exe) 및 소스코드 실행 환경 경로 처리
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+    BUNDLE_DIR = getattr(sys, '_MEIPASS', APP_DIR)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    BUNDLE_DIR = APP_DIR
+
+CONFIG_FILE = os.path.join(APP_DIR, "calendar_config.json")
+TOKEN_FILE = os.path.join(APP_DIR, "token.json")
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 
+# 프로그램 기본 색상 정의 (배경색, 테두리 강조색)
 PRESET_COLORS = {
     "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
     "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
@@ -28,7 +36,32 @@ PRESET_COLORS = {
     "회색": ("rgba(142, 142, 147, 0.35)", "#8E8E93"),
 }
 
+# 구글 캘린더 공식 colorId (1~11번) 매핑
+GOOGLE_COLOR_MAP = {
+    "파랑": "9",   # 진파랑 (블루베리)
+    "빨강": "11",  # 빨강 (토마토)
+    "초록": "10",  # 초록 (바질)
+    "주황": "6",   # 주황 (감귤)
+    "보라": "3",   # 보라 (포도)
+    "노랑": "5",   # 노랑 (바나나)
+    "분홍": "4",   # 분홍 (플라밍고)
+    "하늘": "7",   # 하늘 (피콕 블루)
+    "회색": "8",   # 회색 (흑연)
+}
+GOOGLE_COLOR_REVERSE = {v: k for k, v in GOOGLE_COLOR_MAP.items()}
+
 DEFAULT_EVENT_COLOR = ("rgba(44, 117, 255, 0.30)", "#2C75FF")
+
+def get_credentials_path():
+    # 1. exe 실행 파일과 같은 폴더에 있는 credentials.json 확인
+    local_path = os.path.join(APP_DIR, "credentials.json")
+    if os.path.exists(local_path):
+        return local_path
+    # 2. exe 내부 패키징 확인 (하위 호환)
+    bundled_path = os.path.join(BUNDLE_DIR, "credentials.json")
+    if os.path.exists(bundled_path):
+        return bundled_path
+    return None
 
 def is_recurring_on_date(rec_rule, target_date):
     try:
@@ -239,12 +272,14 @@ class DayEventDialog(QtWidgets.QDialog):
     def load_items(self):
         self.list_widget.clear()
 
-        # 1. 구글 캘린더 일정 (삭제 가능)
+        # 1. 구글 캘린더 일정
         g_events = self.parent_cal.google_events.get(self.target_date, [])
         for gev in g_events:
             title = gev.get("summary", "(제목 없음)")
             ev_id = gev.get("id")
-            item = QtWidgets.QListWidgetItem(f"🌐 [구글 동기화] {title}")
+            cid = gev.get("colorId")
+            color_name = GOOGLE_COLOR_REVERSE.get(cid, "구글기본")
+            item = QtWidgets.QListWidgetItem(f"🌐 [구글 동기화][{color_name}] {title}")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, ("google", ev_id, title))
             self.list_widget.addItem(item)
 
@@ -253,7 +288,7 @@ class DayEventDialog(QtWidgets.QDialog):
         for idx, lev in enumerate(local_map.get(self.date_str, [])):
             t = lev.get("title", "") if isinstance(lev, dict) else str(lev)
             c = lev.get("color", "파랑") if isinstance(lev, dict) else "파랑"
-            item = QtWidgets.QListWidgetItem(f"💻 [PC전용] [{c}] {t}")
+            item = QtWidgets.QListWidgetItem(f"💻 [PC전용][{c}] {t}")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, ("single", idx, t))
             self.list_widget.addItem(item)
 
@@ -264,7 +299,7 @@ class DayEventDialog(QtWidgets.QDialog):
                 c = rec.get("color", "파랑")
                 rep = rec.get("repeat", "")
                 r_id = rec.get("id")
-                item = QtWidgets.QListWidgetItem(f"🔁 [PC반복] [{rep}][{c}] {t}")
+                item = QtWidgets.QListWidgetItem(f"🔁 [PC반복][{rep}][{c}] {t}")
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, ("recurring", r_id, t))
                 self.list_widget.addItem(item)
 
@@ -278,14 +313,13 @@ class DayEventDialog(QtWidgets.QDialog):
         sync_google = self.chk_google.isChecked()
 
         if sync_google and self.parent_cal.service:
-            # 구글 캘린더에 직접 등록 (스마트폰 즉시 반영)
-            success = self.parent_cal.create_google_event(txt, self.target_date, chosen_repeat)
+            # 선택한 색상(chosen_color)을 구글로 전달
+            success = self.parent_cal.create_google_event(txt, self.target_date, chosen_repeat, chosen_color)
             if success:
                 self.input_text.clear()
                 self.load_items()
                 return
 
-        # 체크 해제했거나 구글 미연결 시 PC 로컬에 저장
         if chosen_repeat == "반복 안함":
             local_map = self.parent_cal.config.setdefault("local_events", {})
             local_map.setdefault(self.date_str, []).append({"title": txt, "color": chosen_color})
@@ -365,7 +399,6 @@ class OneUICalendar(QtWidgets.QWidget):
         self.init_ui()
         self.init_tray()
 
-        # 구글 API 인증 및 일정 로드
         QtCore.QTimer.singleShot(150, self.setup_google_auth)
 
         # 5분마다 최신 구글 일정 자동 동기화
@@ -417,7 +450,8 @@ class OneUICalendar(QtWidgets.QWidget):
         self.save_config()
 
     def setup_google_auth(self):
-        if not os.path.exists(CREDENTIALS_FILE):
+        cred_path = get_credentials_path()
+        if not cred_path:
             self.tray.showMessage(
                 "구글 인증 안내",
                 "프로그램 폴더에 credentials.json 파일이 필요합니다.",
@@ -440,7 +474,7 @@ class OneUICalendar(QtWidgets.QWidget):
                     except Exception:
                         creds = None
                 if not creds:
-                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                    flow = InstalledAppFlow.from_client_secrets_file(cred_path, SCOPES)
                     creds = flow.run_local_server(port=0)
 
                 with open(TOKEN_FILE, "w", encoding="utf-8") as f:
@@ -477,38 +511,46 @@ class OneUICalendar(QtWidgets.QWidget):
             for item in items:
                 summary = item.get('summary', '(제목 없음)')
                 ev_id = item.get('id')
+                ev_color_id = item.get('colorId')  # 구글 colorId 읽기
                 start = item.get('start', {})
                 end = item.get('end', {})
+
+                event_data = {'id': ev_id, 'summary': summary, 'colorId': ev_color_id}
 
                 if 'date' in start:
                     s_d = datetime.date.fromisoformat(start['date'])
                     e_d = datetime.date.fromisoformat(end.get('date', start['date']))
                     curr = s_d
                     if s_d == e_d:
-                        new_events.setdefault(s_d, []).append({'id': ev_id, 'summary': summary})
+                        new_events.setdefault(s_d, []).append(event_data)
                     else:
                         while curr < e_d:
-                            new_events.setdefault(curr, []).append({'id': ev_id, 'summary': summary})
+                            new_events.setdefault(curr, []).append(event_data)
                             curr += datetime.timedelta(days=1)
                 elif 'dateTime' in start:
                     dt = datetime.datetime.fromisoformat(start['dateTime'])
-                    new_events.setdefault(dt.date(), []).append({'id': ev_id, 'summary': summary})
+                    new_events.setdefault(dt.date(), []).append(event_data)
 
             self.google_events = new_events
             self.render_calendar()
         except Exception:
             pass
 
-    def create_google_event(self, title, target_date, repeat_type="반복 안함"):
+    def create_google_event(self, title, target_date, repeat_type="반복 안함", color_name="파랑"):
         if not self.service:
             return False
         try:
             start_str = target_date.strftime("%Y-%m-%d")
             end_str = (target_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            # 구글 캘린더 API colorId 부여
+            color_id = GOOGLE_COLOR_MAP.get(color_name, "9")
+
             body = {
                 'summary': title,
                 'start': {'date': start_str},
                 'end': {'date': end_str},
+                'colorId': color_id,
             }
 
             rrule_map = {
@@ -782,10 +824,15 @@ class OneUICalendar(QtWidgets.QWidget):
                     cell_layout.addWidget(lbl_day)
 
                     rendered_items = []
-                    # 1. 구글 캘린더 일정
+                    # 1. 구글 캘린더 일정 (구글 colorId와 로컬 색상 매핑)
                     for gev in self.google_events.get(this_date, []):
                         title = gev.get("summary", "")
-                        bg_col, border_col = self.get_event_color(title)
+                        cid = gev.get("colorId")
+                        if cid and cid in GOOGLE_COLOR_REVERSE:
+                            c_name = GOOGLE_COLOR_REVERSE[cid]
+                            bg_col, border_col = PRESET_COLORS.get(c_name, DEFAULT_EVENT_COLOR)
+                        else:
+                            bg_col, border_col = self.get_event_color(title)
                         rendered_items.append((title, bg_col, border_col))
 
                     # 2. PC 단일 일정
