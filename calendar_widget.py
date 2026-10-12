@@ -9,7 +9,7 @@ import ctypes
 
 CONFIG_FILE = "calendar_config.json"
 
-# One UI 컬러 팔레트
+# One UI 컬러 팔레트 (배경 투명도 / 테두리 및 텍스트 포인트)
 PRESET_COLORS = {
     "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
     "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
@@ -99,6 +99,220 @@ class Win32Helper:
             style &= ~Win32Helper.WS_EX_TRANSPARENT
         ctypes.windll.user32.SetWindowLongW(hwnd, Win32Helper.GWL_EXSTYLE, style)
 
+class DayCell(QtWidgets.QFrame):
+    def __init__(self, date_val, parent_cal):
+        super().__init__()
+        self.date_val = date_val
+        self.parent_cal = parent_cal
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.parent_cal.open_day_dialog(self.date_val)
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event):
+        self.parent_cal.mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.parent_cal.mouseMoveEvent(event)
+
+class DayEventDialog(QtWidgets.QDialog):
+    def __init__(self, target_date, parent_cal):
+        super().__init__(parent_cal)
+        self.target_date = target_date
+        self.parent_cal = parent_cal
+        self.date_str = target_date.strftime("%Y-%m-%d")
+
+        self.setWindowTitle(f"{self.target_date.month}월 {self.target_date.day}일 일정 관리")
+        self.setFixedSize(400, 450)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #202022;
+                border-radius: 16px;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }
+            QLabel {
+                color: #FFFFFF;
+                font-family: 'Malgun Gothic', 'Segoe UI';
+            }
+            QLineEdit {
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #0072DE;
+            }
+            QComboBox {
+                background-color: #2C2C2E;
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2C2C2E;
+                color: #FFFFFF;
+                selection-background-color: #0072DE;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            QPushButton {
+                background-color: #0072DE;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 14px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #0A84FF;
+            }
+            QListWidget {
+                background-color: rgba(0, 0, 0, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+                color: white;
+                font-size: 13px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 7px;
+                border-radius: 6px;
+                margin-bottom: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(255, 255, 255, 0.15);
+            }
+        """)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QtWidgets.QLabel(f"📅 {self.target_date.strftime('%Y년 %m월 %d일')} 일정")
+        title.setStyleSheet("font-size: 17px; font-weight: bold;")
+        layout.addWidget(title)
+
+        self.list_widget = QtWidgets.QListWidget()
+        layout.addWidget(self.list_widget)
+
+        # 일정 입력 + 색상 선택 영역
+        input_layout = QtWidgets.QHBoxLayout()
+        self.input_text = QtWidgets.QLineEdit()
+        self.input_text.setPlaceholderText("새 일정 입력")
+        self.input_text.returnPressed.connect(self.add_event)
+
+        # 자유 색상 선택 콤보박스
+        self.combo_color = QtWidgets.QComboBox()
+        color_names = ["파랑", "빨강", "초록", "주황", "보라", "노랑", "분홍", "하늘", "회색"]
+        for c in color_names:
+            self.combo_color.addItem(c)
+
+        btn_add = QtWidgets.QPushButton("추가")
+        btn_add.clicked.connect(self.add_event)
+
+        input_layout.addWidget(self.input_text, 3)
+        input_layout.addWidget(self.combo_color, 2)
+        input_layout.addWidget(btn_add, 1)
+        layout.addLayout(input_layout)
+
+        # 하단 조작 버튼
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_del = QtWidgets.QPushButton("선택한 일정 삭제")
+        btn_del.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 69, 58, 0.2);
+                color: #FF453A;
+                border: 1px solid rgba(255, 69, 58, 0.4);
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 69, 58, 0.35);
+            }
+        """)
+        btn_del.clicked.connect(self.delete_selected)
+
+        btn_close = QtWidgets.QPushButton("닫기")
+        btn_close.setStyleSheet("background-color: rgba(255, 255, 255, 0.12); color: white;")
+        btn_close.clicked.connect(self.accept)
+
+        btn_layout.addWidget(btn_del)
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+        self.load_items()
+
+    def load_items(self):
+        self.list_widget.clear()
+        # 구글 동기화 일정 표시 (읽기 전용)
+        g_events = self.parent_cal.events.get(self.target_date, [])
+        for gev in g_events:
+            item = QtWidgets.QListWidgetItem(f"🌐 [구글] {gev}")
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
+            item.setForeground(QtGui.QColor("#8E8E93"))
+            self.list_widget.addItem(item)
+
+        # PC 직접 등록 일정 표시 (지정한 색상 이름 함께 표시)
+        local_map = self.parent_cal.config.get("local_events", {})
+        l_events = local_map.get(self.date_str, [])
+        for idx, lev in enumerate(l_events):
+            if isinstance(lev, dict):
+                title = lev.get("title", "")
+                c_name = lev.get("color", "파랑")
+            else:
+                title = str(lev)
+                c_name = "파랑"
+
+            item = QtWidgets.QListWidgetItem(f"📌 [{c_name}] {title}")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, idx)
+            self.list_widget.addItem(item)
+
+    def add_event(self):
+        txt = self.input_text.text().strip()
+        if not txt:
+            return
+
+        chosen_color = self.combo_color.currentText()
+        local_map = self.parent_cal.config.setdefault("local_events", {})
+        # 일정 텍스트와 사용자가 선택한 고유 색상을 함께 저장
+        local_map.setdefault(self.date_str, []).append({
+            "title": txt,
+            "color": chosen_color
+        })
+        self.parent_cal.save_config()
+        self.parent_cal.render_calendar()
+
+        self.input_text.clear()
+        self.load_items()
+
+    def delete_selected(self):
+        curr = self.list_widget.currentItem()
+        if not curr:
+            return
+        idx = curr.data(QtCore.Qt.ItemDataRole.UserRole)
+        if idx is None:
+            return
+
+        local_map = self.parent_cal.config.get("local_events", {})
+        if self.date_str in local_map:
+            try:
+                local_map[self.date_str].pop(idx)
+                if not local_map[self.date_str]:
+                    del local_map[self.date_str]
+                self.parent_cal.save_config()
+                self.parent_cal.render_calendar()
+                self.load_items()
+            except Exception:
+                pass
+
 class OneUICalendar(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -107,7 +321,6 @@ class OneUICalendar(QtWidgets.QWidget):
         self.current_date = datetime.date.today()
         self.click_through_enabled = False
 
-        # 크기 및 위치 변경 시 자동 저장을 위한 타이머
         self.save_timer = QtCore.QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.timeout.connect(self.save_current_geometry)
@@ -130,7 +343,9 @@ class OneUICalendar(QtWidgets.QWidget):
             "height": 750,
             "x": None,
             "y": None,
+            "local_events": {},
             "custom_colors": {
+                "조사": "주황",
                 "당직": "빨강",
                 "야간": "빨강",
                 "비번": "회색",
@@ -145,14 +360,15 @@ class OneUICalendar(QtWidgets.QWidget):
                     default.update(loaded)
                     if "custom_colors" not in default:
                         default["custom_colors"] = {
+                            "조사": "주황",
                             "당직": "빨강",
+                            "야간": "빨강",
                             "비번": "회색",
-                            "수1": "하늘",
-                            "수2": "하늘",
-                            "수3": "하늘",
-                            "수4": "하늘",
-                            "조사": "보라"
+                            "휴무": "초록",
+                            "주간": "파랑"
                         }
+                    if "local_events" not in default:
+                        default["local_events"] = {}
                     return default
             except Exception:
                 pass
@@ -188,7 +404,6 @@ class OneUICalendar(QtWidgets.QWidget):
         self.setMinimumSize(600, 450)
         self.resize(self.config.get("width", 1100), self.config.get("height", 750))
 
-        # 이전에 저장된 위치가 있으면 그 자리로 이동
         x = self.config.get("x")
         y = self.config.get("y")
         if x is not None and y is not None:
@@ -301,11 +516,14 @@ class OneUICalendar(QtWidgets.QWidget):
     def moveEvent(self, event):
         super().moveEvent(event)
         if hasattr(self, 'save_timer'):
-            # 창 이동이 끝나고 0.5초 뒤 새로운 X, Y 좌표를 자동 저장
             self.save_timer.start(500)
 
     def update_header(self):
         self.header_title.setText(f"{self.current_date.year}년 {self.current_date.month}월")
+
+    def open_day_dialog(self, target_date):
+        dlg = DayEventDialog(target_date, self)
+        dlg.exec()
 
     def render_calendar(self):
         while self.grid.count():
@@ -322,6 +540,8 @@ class OneUICalendar(QtWidgets.QWidget):
         prev_month_days = (first_day - datetime.timedelta(days=1)).day
         today = datetime.date.today()
 
+        local_events = self.config.get("local_events", {})
+
         for r in range(6):
             self.grid.setRowStretch(r, 1)
         for c in range(7):
@@ -333,20 +553,21 @@ class OneUICalendar(QtWidgets.QWidget):
         for row in range(6):
             for col in range(7):
                 idx = row * 7 + col
-                cell = QtWidgets.QFrame()
-                cell.setObjectName("DayBox")
-                cell_layout = QtWidgets.QVBoxLayout(cell)
-                cell_layout.setContentsMargins(8, 8, 8, 8)
-                cell_layout.setSpacing(4)
-                cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
                 if idx < start_weekday:
                     p_day = prev_month_days - (start_weekday - idx - 1)
+                    p_date = (first_day - datetime.timedelta(days=start_weekday - idx))
+                    cell = DayCell(p_date, self)
+                    cell_layout = QtWidgets.QVBoxLayout(cell)
+                    cell_layout.setContentsMargins(8, 8, 8, 8)
+                    cell_layout.setSpacing(4)
+                    cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
                     lbl_day = QtWidgets.QLabel(str(p_day))
                     lbl_day.setStyleSheet("color: rgba(255, 255, 255, 0.2); font-size: 13px; font-weight: bold;")
                     cell_layout.addWidget(lbl_day)
                     cell.setStyleSheet("""
-                        #DayBox {
+                        DayCell {
                             background-color: rgba(255, 255, 255, 0.02);
                             border-radius: 14px;
                             border: 1px solid rgba(255, 255, 255, 0.02);
@@ -354,6 +575,12 @@ class OneUICalendar(QtWidgets.QWidget):
                     """)
                 elif day_counter <= days_in_month:
                     this_date = datetime.date(year, month, day_counter)
+                    cell = DayCell(this_date, self)
+                    cell_layout = QtWidgets.QVBoxLayout(cell)
+                    cell_layout.setContentsMargins(8, 8, 8, 8)
+                    cell_layout.setSpacing(4)
+                    cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
                     lbl_day = QtWidgets.QLabel(str(day_counter))
                     is_today = (this_date == today)
 
@@ -367,7 +594,7 @@ class OneUICalendar(QtWidgets.QWidget):
                             font-weight: bold;
                         """)
                         cell.setStyleSheet("""
-                            #DayBox {
+                            DayCell {
                                 background-color: rgba(0, 114, 222, 0.12);
                                 border-radius: 14px;
                                 border: 1.5px solid rgba(0, 114, 222, 0.5);
@@ -377,19 +604,41 @@ class OneUICalendar(QtWidgets.QWidget):
                         color = "#FF453A" if col == 0 else ("#0A84FF" if col == 6 else "#E5E5EA")
                         lbl_day.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
                         cell.setStyleSheet("""
-                            #DayBox {
+                            DayCell {
                                 background-color: rgba(255, 255, 255, 0.04);
                                 border-radius: 14px;
                                 border: 1px solid rgba(255, 255, 255, 0.03);
+                            }
+                            DayCell:hover {
+                                background-color: rgba(255, 255, 255, 0.08);
+                                border: 1px solid rgba(255, 255, 255, 0.1);
                             }
                         """)
 
                     cell_layout.addWidget(lbl_day)
 
-                    ev_list = self.events.get(this_date, [])
-                    for ev in ev_list[:2]:
-                        bg_col, border_col = self.get_event_color(ev)
-                        ev_lbl = QtWidgets.QLabel(f" {ev}")
+                    # 일정 병합 (구글 일정 + PC 직접 등록 일정)
+                    rendered_items = []
+
+                    # 1. 구글 일정 (키워드 규칙 적용)
+                    for gev in self.events.get(this_date, []):
+                        bg_col, border_col = self.get_event_color(gev)
+                        rendered_items.append((gev, bg_col, border_col))
+
+                    # 2. PC 직접 등록 일정 (사용자가 직접 선택한 고유 색상 최우선 적용)
+                    d_str = this_date.strftime("%Y-%m-%d")
+                    for lev in local_events.get(d_str, []):
+                        if isinstance(lev, dict):
+                            title = lev.get("title", "")
+                            c_name = lev.get("color", "파랑")
+                            bg_col, border_col = PRESET_COLORS.get(c_name, DEFAULT_EVENT_COLOR)
+                        else:
+                            title = str(lev)
+                            bg_col, border_col = self.get_event_color(title)
+                        rendered_items.append((title, bg_col, border_col))
+
+                    for title, bg_col, border_col in rendered_items[:2]:
+                        ev_lbl = QtWidgets.QLabel(f" {title}")
                         ev_lbl.setStyleSheet(f"""
                             background-color: {bg_col};
                             color: #FFFFFF;
@@ -401,18 +650,25 @@ class OneUICalendar(QtWidgets.QWidget):
                         """)
                         cell_layout.addWidget(ev_lbl)
 
-                    if len(ev_list) > 2:
-                        more_lbl = QtWidgets.QLabel(f"+{len(ev_list)-2}개")
+                    if len(rendered_items) > 2:
+                        more_lbl = QtWidgets.QLabel(f"+{len(rendered_items)-2}개")
                         more_lbl.setStyleSheet("color: #8E8E93; font-size: 10px;")
                         cell_layout.addWidget(more_lbl)
 
                     day_counter += 1
                 else:
+                    n_date = datetime.date(year + (month // 12), (month % 12) + 1, next_month_counter)
+                    cell = DayCell(n_date, self)
+                    cell_layout = QtWidgets.QVBoxLayout(cell)
+                    cell_layout.setContentsMargins(8, 8, 8, 8)
+                    cell_layout.setSpacing(4)
+                    cell_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
                     lbl_day = QtWidgets.QLabel(str(next_month_counter))
                     lbl_day.setStyleSheet("color: rgba(255, 255, 255, 0.2); font-size: 13px; font-weight: bold;")
                     cell_layout.addWidget(lbl_day)
                     cell.setStyleSheet("""
-                        #DayBox {
+                        DayCell {
                             background-color: rgba(255, 255, 255, 0.02);
                             border-radius: 14px;
                             border: 1px solid rgba(255, 255, 255, 0.02);
@@ -547,7 +803,7 @@ class OneUICalendar(QtWidgets.QWidget):
         self.click_through_enabled = not self.click_through_enabled
         hwnd = int(self.winId())
         Win32Helper.set_click_through(hwnd, self.click_through_enabled)
-        msg = "클릭 관통 모드 활성화 (아이콘 통과 클릭 가능)" if self.click_through_enabled else "클릭 관통 해제 (캘린더 조작 가능)"
+        msg = "클릭 관통 활성화 (바탕화면 아이콘 클릭 가능)" if self.click_through_enabled else "클릭 관통 해제 (날짜 더블클릭으로 일정 입력 가능)"
         self.tray.showMessage("One UI Calendar", msg, QtWidgets.QSystemTrayIcon.MessageIcon.Information, 2000)
 
     def set_ical_url(self):
