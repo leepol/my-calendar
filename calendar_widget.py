@@ -2,14 +2,20 @@ import sys
 import os
 import json
 import datetime
-import requests
-from icalendar import Calendar
 from PyQt6 import QtCore, QtGui, QtWidgets
 import ctypes
 
-CONFIG_FILE = "calendar_config.json"
+# Google Calendar API 라이브러리
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
-# One UI 컬러 팔레트
+CONFIG_FILE = "calendar_config.json"
+CREDENTIALS_FILE = "credentials.json"
+TOKEN_FILE = "token.json"
+SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+
 PRESET_COLORS = {
     "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
     "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
@@ -25,7 +31,6 @@ PRESET_COLORS = {
 DEFAULT_EVENT_COLOR = ("rgba(44, 117, 255, 0.30)", "#2C75FF")
 
 def is_recurring_on_date(rec_rule, target_date):
-    """PC 자체 등록 반복 일정이 특정 날짜에 해당하는지 수학적으로 계산"""
     try:
         start_date = datetime.date.fromisoformat(rec_rule.get("start_date", ""))
     except Exception:
@@ -59,72 +64,8 @@ def is_recurring_on_date(rec_rule, target_date):
             return True
         return False
     elif repeat_type == "1년 간격":
-        if target_date.month == start_date.month and target_date.day == start_date.day:
-            return True
-        if start_date.month == 2 and start_date.day == 29:
-            if target_date.month == 2 and target_date.day == 28:
-                is_leap = (target_date.year % 4 == 0 and (target_date.year % 100 != 0 or target_date.year % 400 == 0))
-                if not is_leap:
-                    return True
-        return False
+        return target_date.month == start_date.month and target_date.day == start_date.day
     return False
-
-def expand_recurrence(dtstart, rrule_val, exdates, range_start, range_end):
-    dates = []
-    try:
-        base_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
-        rrule_str = rrule_val.to_ical().decode("utf-8") if hasattr(rrule_val, "to_ical") else str(rrule_val)
-        params = dict(item.split("=", 1) for item in rrule_str.split(";") if "=" in item)
-        params = {k.upper(): v for k, v in params.items()}
-
-        freq = params.get("FREQ", "DAILY").upper()
-        interval = int(params.get("INTERVAL", 1))
-        count = int(params.get("COUNT", 999999))
-
-        until_date = None
-        if "UNTIL" in params:
-            u = params["UNTIL"]
-            try:
-                until_date = datetime.date(int(u[:4]), int(u[4:6]), int(u[6:8]))
-            except Exception:
-                pass
-
-        if freq == "DAILY":
-            cur = base_date
-            c = 0
-            if cur < range_start and interval > 0:
-                steps = (range_start - cur).days // interval
-                cur += datetime.timedelta(days=steps * interval)
-                c += steps
-
-            while cur <= range_end and c < count:
-                if until_date and cur > until_date:
-                    break
-                if cur >= range_start and cur not in exdates:
-                    dates.append(cur)
-                cur += datetime.timedelta(days=interval)
-                c += 1
-
-        elif freq == "WEEKLY":
-            cur = base_date
-            c = 0
-            while cur <= range_end and c < count:
-                if until_date and cur > until_date:
-                    break
-                if cur >= range_start and cur not in exdates:
-                    dates.append(cur)
-                cur += datetime.timedelta(weeks=interval)
-                c += 1
-        else:
-            if range_start <= base_date <= range_end and base_date not in exdates:
-                dates.append(base_date)
-
-    except Exception:
-        base_date = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
-        if range_start <= base_date <= range_end:
-            dates.append(base_date)
-
-    return dates
 
 class Win32Helper:
     GWL_EXSTYLE = -20
@@ -167,7 +108,7 @@ class DayEventDialog(QtWidgets.QDialog):
         self.date_str = target_date.strftime("%Y-%m-%d")
 
         self.setWindowTitle(f"{self.target_date.month}월 {self.target_date.day}일 일정 관리")
-        self.setFixedSize(430, 480)
+        self.setFixedSize(450, 520)
         self.setStyleSheet("""
             QDialog {
                 background-color: #202022;
@@ -198,12 +139,6 @@ class DayEventDialog(QtWidgets.QDialog):
                 font-size: 13px;
                 font-weight: bold;
             }
-            QComboBox QAbstractItemView {
-                background-color: #2C2C2E;
-                color: #FFFFFF;
-                selection-background-color: #0072DE;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }
             QPushButton {
                 background-color: #0072DE;
                 color: white;
@@ -217,26 +152,31 @@ class DayEventDialog(QtWidgets.QDialog):
                 background-color: #0A84FF;
             }
             QListWidget {
-                background-color: rgba(0, 0, 0, 0.2);
+                background-color: rgba(0, 0, 0, 0.25);
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 10px;
                 color: white;
                 font-size: 13px;
-                padding: 5px;
+                padding: 6px;
             }
             QListWidget::item {
-                padding: 7px;
+                padding: 8px;
                 border-radius: 6px;
-                margin-bottom: 2px;
+                margin-bottom: 3px;
             }
             QListWidget::item:selected {
                 background-color: rgba(255, 255, 255, 0.15);
+            }
+            QCheckBox {
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: bold;
             }
         """)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         title = QtWidgets.QLabel(f"📅 {self.target_date.strftime('%Y년 %m월 %d일')} 일정")
         title.setStyleSheet("font-size: 17px; font-weight: bold;")
@@ -246,23 +186,17 @@ class DayEventDialog(QtWidgets.QDialog):
         layout.addWidget(self.list_widget)
 
         self.input_text = QtWidgets.QLineEdit()
-        self.input_text.setPlaceholderText("새 일정 입력 (예: 순환근무, 당직, 조사)")
+        self.input_text.setPlaceholderText("새 일정 입력 (예: 당직, 회의, 약속)")
         self.input_text.returnPressed.connect(self.add_event)
         layout.addWidget(self.input_text)
 
         control_row = QtWidgets.QHBoxLayout()
         self.combo_repeat = QtWidgets.QComboBox()
-        repeat_options = [
-            "반복 안함", "1일 간격", "2일 간격", "3일 간격",
-            "4일 간격", "5일 간격", "6일 간격", "7일 간격",
-            "1달 간격", "1년 간격"
-        ]
-        for opt in repeat_options:
+        for opt in ["반복 안함", "1일 간격", "2일 간격", "3일 간격", "4일 간격", "5일 간격", "6일 간격", "7일 간격", "1달 간격", "1년 간격"]:
             self.combo_repeat.addItem(opt)
 
         self.combo_color = QtWidgets.QComboBox()
-        color_names = ["파랑", "빨강", "초록", "주황", "보라", "노랑", "분홍", "하늘", "회색"]
-        for c in color_names:
+        for c in ["파랑", "빨강", "초록", "주황", "보라", "노랑", "분홍", "하늘", "회색"]:
             self.combo_color.addItem(c)
 
         btn_add = QtWidgets.QPushButton("일정 추가")
@@ -272,6 +206,10 @@ class DayEventDialog(QtWidgets.QDialog):
         control_row.addWidget(self.combo_color, 2)
         control_row.addWidget(btn_add, 2)
         layout.addLayout(control_row)
+
+        self.chk_google = QtWidgets.QCheckBox("🌐 스마트폰(구글 캘린더)에 즉시 동기화")
+        self.chk_google.setChecked(True)
+        layout.addWidget(self.chk_google)
 
         btn_layout = QtWidgets.QHBoxLayout()
         btn_del = QtWidgets.QPushButton("선택한 일정 삭제")
@@ -300,37 +238,34 @@ class DayEventDialog(QtWidgets.QDialog):
 
     def load_items(self):
         self.list_widget.clear()
-        g_events = self.parent_cal.events.get(self.target_date, [])
+
+        # 1. 구글 캘린더 일정 (삭제 가능)
+        g_events = self.parent_cal.google_events.get(self.target_date, [])
         for gev in g_events:
-            item = QtWidgets.QListWidgetItem(f"🌐 [구글] {gev}")
-            item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
-            item.setForeground(QtGui.QColor("#8E8E93"))
+            title = gev.get("summary", "(제목 없음)")
+            ev_id = gev.get("id")
+            item = QtWidgets.QListWidgetItem(f"🌐 [구글 동기화] {title}")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, ("google", ev_id, title))
             self.list_widget.addItem(item)
 
+        # 2. PC 단일 일정
         local_map = self.parent_cal.config.get("local_events", {})
-        l_events = local_map.get(self.date_str, [])
-        for idx, lev in enumerate(l_events):
-            if isinstance(lev, dict):
-                title = lev.get("title", "")
-                c_name = lev.get("color", "파랑")
-            else:
-                title = str(lev)
-                c_name = "파랑"
-
-            item = QtWidgets.QListWidgetItem(f"📌 [{c_name}] {title}")
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, ("single", idx, title))
+        for idx, lev in enumerate(local_map.get(self.date_str, [])):
+            t = lev.get("title", "") if isinstance(lev, dict) else str(lev)
+            c = lev.get("color", "파랑") if isinstance(lev, dict) else "파랑"
+            item = QtWidgets.QListWidgetItem(f"💻 [PC전용] [{c}] {t}")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, ("single", idx, t))
             self.list_widget.addItem(item)
 
-        recurring_list = self.parent_cal.config.get("recurring_events", [])
-        for rec in recurring_list:
+        # 3. PC 반복 일정
+        for rec in self.parent_cal.config.get("recurring_events", []):
             if is_recurring_on_date(rec, self.target_date):
-                title = rec.get("title", "")
-                c_name = rec.get("color", "파랑")
-                rep_type = rec.get("repeat", "")
-                rec_id = rec.get("id")
-
-                item = QtWidgets.QListWidgetItem(f"🔁 [{rep_type}][{c_name}] {title}")
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, ("recurring", rec_id, title))
+                t = rec.get("title", "")
+                c = rec.get("color", "파랑")
+                rep = rec.get("repeat", "")
+                r_id = rec.get("id")
+                item = QtWidgets.QListWidgetItem(f"🔁 [PC반복] [{rep}][{c}] {t}")
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, ("recurring", r_id, t))
                 self.list_widget.addItem(item)
 
     def add_event(self):
@@ -340,18 +275,24 @@ class DayEventDialog(QtWidgets.QDialog):
 
         chosen_color = self.combo_color.currentText()
         chosen_repeat = self.combo_repeat.currentText()
+        sync_google = self.chk_google.isChecked()
 
+        if sync_google and self.parent_cal.service:
+            # 구글 캘린더에 직접 등록 (스마트폰 즉시 반영)
+            success = self.parent_cal.create_google_event(txt, self.target_date, chosen_repeat)
+            if success:
+                self.input_text.clear()
+                self.load_items()
+                return
+
+        # 체크 해제했거나 구글 미연결 시 PC 로컬에 저장
         if chosen_repeat == "반복 안함":
             local_map = self.parent_cal.config.setdefault("local_events", {})
-            local_map.setdefault(self.date_str, []).append({
-                "title": txt,
-                "color": chosen_color
-            })
+            local_map.setdefault(self.date_str, []).append({"title": txt, "color": chosen_color})
         else:
             rec_list = self.parent_cal.config.setdefault("recurring_events", [])
-            rec_id = str(datetime.datetime.now().timestamp())
             rec_list.append({
-                "id": rec_id,
+                "id": str(datetime.datetime.now().timestamp()),
                 "title": txt,
                 "color": chosen_color,
                 "repeat": chosen_repeat,
@@ -360,7 +301,6 @@ class DayEventDialog(QtWidgets.QDialog):
 
         self.parent_cal.save_config()
         self.parent_cal.render_calendar()
-
         self.input_text.clear()
         self.load_items()
 
@@ -368,14 +308,22 @@ class DayEventDialog(QtWidgets.QDialog):
         curr = self.list_widget.currentItem()
         if not curr:
             return
-
         data = curr.data(QtCore.Qt.ItemDataRole.UserRole)
         if not data:
             return
 
         action_type, target_id, title = data
 
-        if action_type == "single":
+        if action_type == "google":
+            reply = QtWidgets.QMessageBox.question(
+                self, "구글 일정 삭제",
+                f"스마트폰(구글 캘린더)에서도 '{title}' 일정을 완전히 삭제하시겠습니까?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                if self.parent_cal.delete_google_event(target_id):
+                    self.load_items()
+        elif action_type == "single":
             local_map = self.parent_cal.config.get("local_events", {})
             if self.date_str in local_map:
                 try:
@@ -390,7 +338,7 @@ class DayEventDialog(QtWidgets.QDialog):
         elif action_type == "recurring":
             reply = QtWidgets.QMessageBox.question(
                 self, "반복 일정 삭제",
-                f"'{title}' 반복 일정을 전체 삭제하시겠습니까?",
+                f"'{title}' PC 반복 일정을 전체 삭제하시겠습니까?",
                 QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
             )
             if reply == QtWidgets.QMessageBox.StandardButton.Yes:
@@ -404,7 +352,8 @@ class OneUICalendar(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.config = self.load_config()
-        self.events = {}
+        self.google_events = {}
+        self.service = None
         self.current_date = datetime.date.today()
         self.click_through_enabled = self.config.get("click_through", False)
 
@@ -416,25 +365,26 @@ class OneUICalendar(QtWidgets.QWidget):
         self.init_ui()
         self.init_tray()
 
-        self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.fetch_ical_events)
-        self.timer.start(10 * 60 * 1000)
+        # 구글 API 인증 및 일정 로드
+        QtCore.QTimer.singleShot(150, self.setup_google_auth)
 
-        QtCore.QTimer.singleShot(100, self.fetch_ical_events)
+        # 5분마다 최신 구글 일정 자동 동기화
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.fetch_google_events)
+        self.timer.start(5 * 60 * 1000)
 
         if self.click_through_enabled:
-            QtCore.QTimer.singleShot(250, self.apply_initial_click_through)
+            QtCore.QTimer.singleShot(300, self.apply_initial_click_through)
 
     def load_config(self):
         default = {
-            "ical_url": "",
             "opacity": 0.85,
             "width": 1100,
             "height": 750,
             "x": None,
             "y": None,
             "click_through": False,
-            "default_color": "파랑",
+            "default_color": "회색",
             "local_events": {},
             "recurring_events": [],
             "custom_colors": {
@@ -451,22 +401,6 @@ class OneUICalendar(QtWidgets.QWidget):
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                     default.update(loaded)
-                    if "custom_colors" not in default:
-                        default["custom_colors"] = {
-                            "조사": "주황",
-                            "당직": "빨강",
-                            "야간": "빨강",
-                            "비번": "회색",
-                            "휴무": "초록",
-                            "주간": "파랑"
-                        }
-                    if "local_events" not in default:
-                        default["local_events"] = {}
-                    if "recurring_events" not in default:
-                        default["recurring_events"] = []
-                    if "default_color" not in default:
-                        default["default_color"] = "파랑"
-                    return default
             except Exception:
                 pass
         return default
@@ -482,16 +416,141 @@ class OneUICalendar(QtWidgets.QWidget):
         self.config["y"] = self.y()
         self.save_config()
 
+    def setup_google_auth(self):
+        if not os.path.exists(CREDENTIALS_FILE):
+            self.tray.showMessage(
+                "구글 인증 안내",
+                "프로그램 폴더에 credentials.json 파일이 필요합니다.",
+                QtWidgets.QSystemTrayIcon.MessageIcon.Warning, 3000
+            )
+            return
+
+        try:
+            creds = None
+            if os.path.exists(TOKEN_FILE):
+                try:
+                    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+                except Exception:
+                    creds = None
+
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(Request())
+                    except Exception:
+                        creds = None
+                if not creds:
+                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                    creds = flow.run_local_server(port=0)
+
+                with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                    f.write(creds.to_json())
+
+            self.service = build("calendar", "v3", credentials=creds)
+            self.fetch_google_events()
+            self.tray.showMessage("One UI Calendar", "구글 캘린더 양방향 연동이 활성화되었습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 2000)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "구글 연동 오류", f"구글 계정 연결 중 문제가 발생했습니다:\n{e}")
+
+    def fetch_google_events(self):
+        if not self.service:
+            return
+        try:
+            today = datetime.date.today()
+            start_date = today - datetime.timedelta(days=90)
+            end_date = today + datetime.timedelta(days=200)
+
+            time_min = datetime.datetime.combine(start_date, datetime.time.min).isoformat() + "Z"
+            time_max = datetime.datetime.combine(end_date, datetime.time.max).isoformat() + "Z"
+
+            events_result = self.service.events().list(
+                calendarId='primary',
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+
+            items = events_result.get('items', [])
+            new_events = {}
+
+            for item in items:
+                summary = item.get('summary', '(제목 없음)')
+                ev_id = item.get('id')
+                start = item.get('start', {})
+                end = item.get('end', {})
+
+                if 'date' in start:
+                    s_d = datetime.date.fromisoformat(start['date'])
+                    e_d = datetime.date.fromisoformat(end.get('date', start['date']))
+                    curr = s_d
+                    if s_d == e_d:
+                        new_events.setdefault(s_d, []).append({'id': ev_id, 'summary': summary})
+                    else:
+                        while curr < e_d:
+                            new_events.setdefault(curr, []).append({'id': ev_id, 'summary': summary})
+                            curr += datetime.timedelta(days=1)
+                elif 'dateTime' in start:
+                    dt = datetime.datetime.fromisoformat(start['dateTime'])
+                    new_events.setdefault(dt.date(), []).append({'id': ev_id, 'summary': summary})
+
+            self.google_events = new_events
+            self.render_calendar()
+        except Exception:
+            pass
+
+    def create_google_event(self, title, target_date, repeat_type="반복 안함"):
+        if not self.service:
+            return False
+        try:
+            start_str = target_date.strftime("%Y-%m-%d")
+            end_str = (target_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            body = {
+                'summary': title,
+                'start': {'date': start_str},
+                'end': {'date': end_str},
+            }
+
+            rrule_map = {
+                "1일 간격": "RRULE:FREQ=DAILY;INTERVAL=1",
+                "2일 간격": "RRULE:FREQ=DAILY;INTERVAL=2",
+                "3일 간격": "RRULE:FREQ=DAILY;INTERVAL=3",
+                "4일 간격": "RRULE:FREQ=DAILY;INTERVAL=4",
+                "5일 간격": "RRULE:FREQ=DAILY;INTERVAL=5",
+                "6일 간격": "RRULE:FREQ=DAILY;INTERVAL=6",
+                "7일 간격": "RRULE:FREQ=WEEKLY;INTERVAL=1",
+                "1달 간격": "RRULE:FREQ=MONTHLY;INTERVAL=1",
+                "1년 간격": "RRULE:FREQ=YEARLY;INTERVAL=1",
+            }
+            if repeat_type in rrule_map:
+                body['recurrence'] = [rrule_map[repeat_type]]
+
+            self.service.events().insert(calendarId='primary', body=body).execute()
+            self.fetch_google_events()
+            return True
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "구글 등록 오류", f"구글 일정 등록에 실패했습니다:\n{e}")
+            return False
+
+    def delete_google_event(self, event_id):
+        if not self.service:
+            return False
+        try:
+            self.service.events().delete(calendarId='primary', eventId=event_id).execute()
+            self.fetch_google_events()
+            return True
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "구글 삭제 오류", f"구글 일정 삭제에 실패했습니다:\n{e}")
+            return False
+
     def get_event_color(self, summary):
         s = str(summary).strip()
         custom_map = self.config.get("custom_colors", {})
-        # 1. 키워드 매칭 우선
         for keyword, color_name in custom_map.items():
             if keyword in s:
                 if color_name in PRESET_COLORS:
                     return PRESET_COLORS[color_name]
-        # 2. 키워드가 없는 일반 일정은 설정된 default_color 적용
-        def_color_name = self.config.get("default_color", "파랑")
+        def_color_name = self.config.get("default_color", "회색")
         return PRESET_COLORS.get(def_color_name, DEFAULT_EVENT_COLOR)
 
     def init_window(self):
@@ -723,30 +782,27 @@ class OneUICalendar(QtWidgets.QWidget):
                     cell_layout.addWidget(lbl_day)
 
                     rendered_items = []
-                    # 1. 구글 일정 (키워드 규칙 우선, 없으면 default_color)
-                    for gev in self.events.get(this_date, []):
-                        bg_col, border_col = self.get_event_color(gev)
-                        rendered_items.append((gev, bg_col, border_col))
+                    # 1. 구글 캘린더 일정
+                    for gev in self.google_events.get(this_date, []):
+                        title = gev.get("summary", "")
+                        bg_col, border_col = self.get_event_color(title)
+                        rendered_items.append((title, bg_col, border_col))
 
                     # 2. PC 단일 일정
                     d_str = this_date.strftime("%Y-%m-%d")
                     for lev in local_events.get(d_str, []):
-                        if isinstance(lev, dict):
-                            title = lev.get("title", "")
-                            c_name = lev.get("color", "파랑")
-                            bg_col, border_col = PRESET_COLORS.get(c_name, DEFAULT_EVENT_COLOR)
-                        else:
-                            title = str(lev)
-                            bg_col, border_col = self.get_event_color(title)
-                        rendered_items.append((title, bg_col, border_col))
+                        t = lev.get("title", "") if isinstance(lev, dict) else str(lev)
+                        c = lev.get("color", "파랑") if isinstance(lev, dict) else "파랑"
+                        bg_col, border_col = PRESET_COLORS.get(c, DEFAULT_EVENT_COLOR)
+                        rendered_items.append((t, bg_col, border_col))
 
                     # 3. PC 반복 일정
                     for rec in recurring_events:
                         if is_recurring_on_date(rec, this_date):
-                            title = rec.get("title", "")
-                            c_name = rec.get("color", "파랑")
-                            bg_col, border_col = PRESET_COLORS.get(c_name, DEFAULT_EVENT_COLOR)
-                            rendered_items.append((title, bg_col, border_col))
+                            t = rec.get("title", "")
+                            c = rec.get("color", "파랑")
+                            bg_col, border_col = PRESET_COLORS.get(c, DEFAULT_EVENT_COLOR)
+                            rendered_items.append((t, bg_col, border_col))
 
                     for title, bg_col, border_col in rendered_items[:2]:
                         ev_lbl = QtWidgets.QLabel(f" {title}")
@@ -814,57 +870,6 @@ class OneUICalendar(QtWidgets.QWidget):
         self.update_header()
         self.render_calendar()
 
-    def fetch_ical_events(self):
-        url = self.config.get("ical_url", "").strip()
-        if not url:
-            return
-        try:
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                cal = Calendar.from_ical(res.text)
-                new_events = {}
-
-                today = datetime.date.today()
-                range_start = today - datetime.timedelta(days=180)
-                range_end = today + datetime.timedelta(days=365)
-
-                for component in cal.walk():
-                    if component.name == "VEVENT":
-                        summary = str(component.get("summary", "일정"))
-                        dtstart_prop = component.get("dtstart")
-                        if not dtstart_prop:
-                            continue
-                        dtstart = dtstart_prop.dt
-
-                        exdates = set()
-                        ex_prop = component.get("exdate")
-                        if ex_prop:
-                            if not isinstance(ex_prop, list):
-                                ex_prop = [ex_prop]
-                            for ex_item in ex_prop:
-                                dts_list = getattr(ex_item, "dts", [ex_item])
-                                for dts in dts_list:
-                                    d_val = getattr(dts, "dt", dts)
-                                    if isinstance(d_val, datetime.datetime):
-                                        exdates.add(d_val.date())
-                                    elif isinstance(d_val, datetime.date):
-                                        exdates.add(d_val)
-
-                        rrule_prop = component.get("rrule")
-                        if rrule_prop:
-                            occ_dates = expand_recurrence(dtstart, rrule_prop, exdates, range_start, range_end)
-                            for occ_date in occ_dates:
-                                new_events.setdefault(occ_date, []).append(summary)
-                        else:
-                            d = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
-                            if d not in exdates:
-                                new_events.setdefault(d, []).append(summary)
-
-                self.events = new_events
-                self.render_calendar()
-        except Exception:
-            pass
-
     def init_tray(self):
         self.tray = QtWidgets.QSystemTrayIcon(self)
         icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView)
@@ -877,17 +882,16 @@ class OneUICalendar(QtWidgets.QWidget):
         self.act_toggle.setChecked(self.click_through_enabled)
         self.act_toggle.triggered.connect(self.toggle_click_through)
 
-        act_url = menu.addAction("구글 캘린더 iCal 주소 설정")
-        act_url.triggered.connect(self.set_ical_url)
+        act_auth = menu.addAction("구글 계정 재연동 (로그인)")
+        act_auth.triggered.connect(self.re_authenticate)
 
-        # 기본 일정 색상 바로 변경 메뉴
         act_def_color = menu.addAction("기본 일정 색상 변경")
         act_def_color.triggered.connect(self.set_default_color)
 
         act_color_config = menu.addAction("일정 색상 설정 (메모장 열기)")
         act_color_config.triggered.connect(self.open_color_config)
 
-        act_refresh = menu.addAction("일정 및 색상 즉시 새로고침")
+        act_refresh = menu.addAction("일정 즉시 새로고침 (수동 동기화)")
         act_refresh.triggered.connect(self.reload_all)
 
         act_size = menu.addAction("창 크기 직접 설정 (가로x세로)")
@@ -903,9 +907,17 @@ class OneUICalendar(QtWidgets.QWidget):
         self.tray.setContextMenu(menu)
         self.tray.show()
 
+    def re_authenticate(self):
+        if os.path.exists(TOKEN_FILE):
+            try:
+                os.remove(TOKEN_FILE)
+            except Exception:
+                pass
+        self.setup_google_auth()
+
     def set_default_color(self):
         color_keys = list(PRESET_COLORS.keys())
-        cur_color = self.config.get("default_color", "파랑")
+        cur_color = self.config.get("default_color", "회색")
         cur_idx = color_keys.index(cur_color) if cur_color in color_keys else 0
 
         item, ok = QtWidgets.QInputDialog.getItem(
@@ -917,25 +929,19 @@ class OneUICalendar(QtWidgets.QWidget):
             self.config["default_color"] = item
             self.save_config()
             self.render_calendar()
-            self.tray.showMessage(
-                "One UI Calendar",
-                f"기본 일정 색상이 '{item}'(으)로 변경되었습니다.",
-                QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500
-            )
 
     def open_color_config(self):
         self.save_config()
-        path = os.path.abspath(CONFIG_FILE)
         try:
-            os.system(f'notepad.exe "{path}"')
+            os.system(f'notepad.exe "{os.path.abspath(CONFIG_FILE)}"')
         except Exception:
             pass
 
     def reload_all(self):
         self.config = self.load_config()
-        self.fetch_ical_events()
+        self.fetch_google_events()
         self.render_calendar()
-        self.tray.showMessage("One UI Calendar", "설정과 일정을 새로고침했습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
+        self.tray.showMessage("One UI Calendar", "구글 일정을 최신 상태로 새로고침했습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
 
     def toggle_click_through(self):
         self.click_through_enabled = not self.click_through_enabled
@@ -948,15 +954,8 @@ class OneUICalendar(QtWidgets.QWidget):
         if hasattr(self, 'act_toggle'):
             self.act_toggle.setChecked(self.click_through_enabled)
 
-        msg = "클릭 관통 모드 활성화 (아이콘 통과 클릭 가능)" if self.click_through_enabled else "클릭 관통 해제 (날짜 더블클릭으로 일정 입력 가능)"
+        msg = "클릭 관통 모드 활성화" if self.click_through_enabled else "클릭 관통 해제 (일정 입력 가능)"
         self.tray.showMessage("One UI Calendar", msg, QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
-
-    def set_ical_url(self):
-        url, ok = QtWidgets.QInputDialog.getText(self, "iCal 설정", "구글 캘린더 비공개 iCal 주소를 입력하세요:", text=self.config.get("ical_url", ""))
-        if ok and url:
-            self.config["ical_url"] = url.strip()
-            self.save_config()
-            self.fetch_ical_events()
 
     def set_window_size(self):
         text, ok = QtWidgets.QInputDialog.getText(
