@@ -204,13 +204,11 @@ class DayEventDialog(QtWidgets.QDialog):
         self.list_widget = QtWidgets.QListWidget()
         layout.addWidget(self.list_widget)
 
-        # 일정 입력 + 색상 선택 영역
         input_layout = QtWidgets.QHBoxLayout()
         self.input_text = QtWidgets.QLineEdit()
         self.input_text.setPlaceholderText("새 일정 입력")
         self.input_text.returnPressed.connect(self.add_event)
 
-        # 자유 색상 선택 콤보박스
         self.combo_color = QtWidgets.QComboBox()
         color_names = ["파랑", "빨강", "초록", "주황", "보라", "노랑", "분홍", "하늘", "회색"]
         for c in color_names:
@@ -224,7 +222,6 @@ class DayEventDialog(QtWidgets.QDialog):
         input_layout.addWidget(btn_add, 1)
         layout.addLayout(input_layout)
 
-        # 하단 조작 버튼
         btn_layout = QtWidgets.QHBoxLayout()
         btn_del = QtWidgets.QPushButton("선택한 일정 삭제")
         btn_del.setStyleSheet("""
@@ -252,7 +249,6 @@ class DayEventDialog(QtWidgets.QDialog):
 
     def load_items(self):
         self.list_widget.clear()
-        # 구글 동기화 일정 표시 (읽기 전용)
         g_events = self.parent_cal.events.get(self.target_date, [])
         for gev in g_events:
             item = QtWidgets.QListWidgetItem(f"🌐 [구글] {gev}")
@@ -260,7 +256,6 @@ class DayEventDialog(QtWidgets.QDialog):
             item.setForeground(QtGui.QColor("#8E8E93"))
             self.list_widget.addItem(item)
 
-        # PC 직접 등록 일정 표시 (지정한 색상 이름 함께 표시)
         local_map = self.parent_cal.config.get("local_events", {})
         l_events = local_map.get(self.date_str, [])
         for idx, lev in enumerate(l_events):
@@ -282,7 +277,6 @@ class DayEventDialog(QtWidgets.QDialog):
 
         chosen_color = self.combo_color.currentText()
         local_map = self.parent_cal.config.setdefault("local_events", {})
-        # 일정 텍스트와 사용자가 선택한 고유 색상을 함께 저장
         local_map.setdefault(self.date_str, []).append({
             "title": txt,
             "color": chosen_color
@@ -319,7 +313,8 @@ class OneUICalendar(QtWidgets.QWidget):
         self.config = self.load_config()
         self.events = {}
         self.current_date = datetime.date.today()
-        self.click_through_enabled = False
+        # 설정에 저장된 관통 모드 여부 불러오기
+        self.click_through_enabled = self.config.get("click_through", False)
 
         self.save_timer = QtCore.QTimer(self)
         self.save_timer.setSingleShot(True)
@@ -335,6 +330,10 @@ class OneUICalendar(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(100, self.fetch_ical_events)
 
+        # 윈도우가 켜진 직후 이전 관통 모드 상태 자동 복원
+        if self.click_through_enabled:
+            QtCore.QTimer.singleShot(250, self.apply_initial_click_through)
+
     def load_config(self):
         default = {
             "ical_url": "",
@@ -343,6 +342,7 @@ class OneUICalendar(QtWidgets.QWidget):
             "height": 750,
             "x": None,
             "y": None,
+            "click_through": False,
             "local_events": {},
             "custom_colors": {
                 "조사": "주황",
@@ -408,6 +408,10 @@ class OneUICalendar(QtWidgets.QWidget):
         y = self.config.get("y")
         if x is not None and y is not None:
             self.move(int(x), int(y))
+
+    def apply_initial_click_through(self):
+        hwnd = int(self.winId())
+        Win32Helper.set_click_through(hwnd, True)
 
     def get_container_style(self, opacity):
         return f"""
@@ -617,15 +621,11 @@ class OneUICalendar(QtWidgets.QWidget):
 
                     cell_layout.addWidget(lbl_day)
 
-                    # 일정 병합 (구글 일정 + PC 직접 등록 일정)
                     rendered_items = []
-
-                    # 1. 구글 일정 (키워드 규칙 적용)
                     for gev in self.events.get(this_date, []):
                         bg_col, border_col = self.get_event_color(gev)
                         rendered_items.append((gev, bg_col, border_col))
 
-                    # 2. PC 직접 등록 일정 (사용자가 직접 선택한 고유 색상 최우선 적용)
                     d_str = this_date.strftime("%Y-%m-%d")
                     for lev in local_events.get(d_str, []):
                         if isinstance(lev, dict):
@@ -718,140 +718,4 @@ class OneUICalendar(QtWidgets.QWidget):
                 range_end = today + datetime.timedelta(days=365)
 
                 for component in cal.walk():
-                    if component.name == "VEVENT":
-                        summary = str(component.get("summary", "일정"))
-                        dtstart_prop = component.get("dtstart")
-                        if not dtstart_prop:
-                            continue
-                        dtstart = dtstart_prop.dt
-
-                        exdates = set()
-                        ex_prop = component.get("exdate")
-                        if ex_prop:
-                            if not isinstance(ex_prop, list):
-                                ex_prop = [ex_prop]
-                            for ex_item in ex_prop:
-                                dts_list = getattr(ex_item, "dts", [ex_item])
-                                for dts in dts_list:
-                                    d_val = getattr(dts, "dt", dts)
-                                    if isinstance(d_val, datetime.datetime):
-                                        exdates.add(d_val.date())
-                                    elif isinstance(d_val, datetime.date):
-                                        exdates.add(d_val)
-
-                        rrule_prop = component.get("rrule")
-                        if rrule_prop:
-                            occ_dates = expand_recurrence(dtstart, rrule_prop, exdates, range_start, range_end)
-                            for occ_date in occ_dates:
-                                new_events.setdefault(occ_date, []).append(summary)
-                        else:
-                            d = dtstart.date() if isinstance(dtstart, datetime.datetime) else dtstart
-                            if d not in exdates:
-                                new_events.setdefault(d, []).append(summary)
-
-                self.events = new_events
-                self.render_calendar()
-        except Exception:
-            pass
-
-    def init_tray(self):
-        self.tray = QtWidgets.QSystemTrayIcon(self)
-        icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView)
-        self.tray.setIcon(icon)
-
-        menu = QtWidgets.QMenu()
-        act_toggle = menu.addAction("클릭 관통(투과) 모드 켜기/끄기")
-        act_toggle.triggered.connect(self.toggle_click_through)
-
-        act_url = menu.addAction("구글 캘린더 iCal 주소 설정")
-        act_url.triggered.connect(self.set_ical_url)
-
-        act_color_config = menu.addAction("일정 색상 설정 (메모장 열기)")
-        act_color_config.triggered.connect(self.open_color_config)
-
-        act_refresh = menu.addAction("일정 및 색상 즉시 새로고침")
-        act_refresh.triggered.connect(self.reload_all)
-
-        act_size = menu.addAction("창 크기 직접 설정 (가로x세로)")
-        act_size.triggered.connect(self.set_window_size)
-
-        act_opacity = menu.addAction("투명도 변경")
-        act_opacity.triggered.connect(self.change_opacity)
-
-        menu.addSeparator()
-        act_quit = menu.addAction("프로그램 종료")
-        act_quit.triggered.connect(QtWidgets.QApplication.instance().quit)
-
-        self.tray.setContextMenu(menu)
-        self.tray.show()
-
-    def open_color_config(self):
-        self.save_config()
-        path = os.path.abspath(CONFIG_FILE)
-        try:
-            os.system(f'notepad.exe "{path}"')
-        except Exception:
-            pass
-
-    def reload_all(self):
-        self.config = self.load_config()
-        self.fetch_ical_events()
-        self.render_calendar()
-        self.tray.showMessage("One UI Calendar", "설정과 일정을 새로고침했습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
-
-    def toggle_click_through(self):
-        self.click_through_enabled = not self.click_through_enabled
-        hwnd = int(self.winId())
-        Win32Helper.set_click_through(hwnd, self.click_through_enabled)
-        msg = "클릭 관통 활성화 (바탕화면 아이콘 클릭 가능)" if self.click_through_enabled else "클릭 관통 해제 (날짜 더블클릭으로 일정 입력 가능)"
-        self.tray.showMessage("One UI Calendar", msg, QtWidgets.QSystemTrayIcon.MessageIcon.Information, 2000)
-
-    def set_ical_url(self):
-        url, ok = QtWidgets.QInputDialog.getText(self, "iCal 설정", "구글 캘린더 비공개 iCal 주소를 입력하세요:", text=self.config.get("ical_url", ""))
-        if ok and url:
-            self.config["ical_url"] = url.strip()
-            self.save_config()
-            self.fetch_ical_events()
-
-    def set_window_size(self):
-        text, ok = QtWidgets.QInputDialog.getText(
-            self, "창 크기 설정", "가로x세로 픽셀을 입력하세요 (예: 1300x850):",
-            text=f"{self.width()}x{self.height()}"
-        )
-        if ok and text:
-            try:
-                parts = text.lower().replace(" ", "").split("x")
-                w, h = int(parts[0]), int(parts[1])
-                if w >= 500 and h >= 400:
-                    self.resize(w, h)
-                    self.save_current_geometry()
-            except Exception:
-                pass
-
-    def change_opacity(self):
-        val, ok = QtWidgets.QInputDialog.getInt(self, "투명도 조절", "투명도 비율 (30 ~ 100%):", int(self.config.get("opacity", 0.85) * 100), 30, 100, 5)
-        if ok:
-            op = val / 100.0
-            self.config["opacity"] = op
-            self.save_config()
-            self.main_frame.setStyleSheet(self.get_container_style(op))
-
-    def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == QtCore.Qt.MouseButton.LeftButton and hasattr(self, '_drag_pos'):
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
-
-if __name__ == "__main__":
-    try:
-        app = QtWidgets.QApplication(sys.argv)
-        cal = OneUICalendar()
-        cal.show()
-        sys.exit(app.exec())
-    except Exception as e:
-        import traceback
-        QtWidgets.QMessageBox.critical(None, "오류 안내", f"실행 중 오류가 발생했습니다:\n{traceback.format_exc()}")
+                    if component.name == "VEVENT
