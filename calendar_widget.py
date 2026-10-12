@@ -24,6 +24,51 @@ PRESET_COLORS = {
 
 DEFAULT_EVENT_COLOR = ("rgba(44, 117, 255, 0.30)", "#2C75FF")
 
+def is_recurring_on_date(rec_rule, target_date):
+    """PC 자체 등록 반복 일정이 특정 날짜에 해당하는지 수학적으로 계산"""
+    try:
+        start_date = datetime.date.fromisoformat(rec_rule.get("start_date", ""))
+    except Exception:
+        return False
+
+    if target_date < start_date:
+        return False
+
+    repeat_type = rec_rule.get("repeat", "반복 안함")
+    diff_days = (target_date - start_date).days
+
+    if repeat_type == "1일 간격":
+        return True
+    elif repeat_type == "2일 간격":
+        return diff_days % 2 == 0
+    elif repeat_type == "3일 간격":
+        return diff_days % 3 == 0
+    elif repeat_type == "4일 간격":
+        return diff_days % 4 == 0
+    elif repeat_type == "5일 간격":
+        return diff_days % 5 == 0
+    elif repeat_type == "6일 간격":
+        return diff_days % 6 == 0
+    elif repeat_type == "7일 간격":
+        return diff_days % 7 == 0
+    elif repeat_type == "1달 간격":
+        if target_date.day == start_date.day:
+            return True
+        next_day = target_date + datetime.timedelta(days=1)
+        if next_day.day == 1 and start_date.day > target_date.day:
+            return True
+        return False
+    elif repeat_type == "1년 간격":
+        if target_date.month == start_date.month and target_date.day == start_date.day:
+            return True
+        if start_date.month == 2 and start_date.day == 29:
+            if target_date.month == 2 and target_date.day == 28:
+                is_leap = (target_date.year % 4 == 0 and (target_date.year % 100 != 0 or target_date.year % 400 == 0))
+                if not is_leap:
+                    return True
+        return False
+    return False
+
 def expand_recurrence(dtstart, rrule_val, exdates, range_start, range_end):
     dates = []
     try:
@@ -122,7 +167,7 @@ class DayEventDialog(QtWidgets.QDialog):
         self.date_str = target_date.strftime("%Y-%m-%d")
 
         self.setWindowTitle(f"{self.target_date.month}월 {self.target_date.day}일 일정 관리")
-        self.setFixedSize(400, 450)
+        self.setFixedSize(430, 480)
         self.setStyleSheet("""
             QDialog {
                 background-color: #202022;
@@ -200,24 +245,38 @@ class DayEventDialog(QtWidgets.QDialog):
         self.list_widget = QtWidgets.QListWidget()
         layout.addWidget(self.list_widget)
 
-        input_layout = QtWidgets.QHBoxLayout()
+        # 1행: 일정 이름 입력
         self.input_text = QtWidgets.QLineEdit()
-        self.input_text.setPlaceholderText("새 일정 입력")
+        self.input_text.setPlaceholderText("새 일정 입력 (예: 순환근무, 당직, 조사)")
         self.input_text.returnPressed.connect(self.add_event)
+        layout.addWidget(self.input_text)
+
+        # 2행: 반복 주기 + 색상 선택 + 추가 버튼
+        control_row = QtWidgets.QHBoxLayout()
+
+        self.combo_repeat = QtWidgets.QComboBox()
+        repeat_options = [
+            "반복 안함", "1일 간격", "2일 간격", "3일 간격",
+            "4일 간격", "5일 간격", "6일 간격", "7일 간격",
+            "1달 간격", "1년 간격"
+        ]
+        for opt in repeat_options:
+            self.combo_repeat.addItem(opt)
 
         self.combo_color = QtWidgets.QComboBox()
         color_names = ["파랑", "빨강", "초록", "주황", "보라", "노랑", "분홍", "하늘", "회색"]
         for c in color_names:
             self.combo_color.addItem(c)
 
-        btn_add = QtWidgets.QPushButton("추가")
+        btn_add = QtWidgets.QPushButton("일정 추가")
         btn_add.clicked.connect(self.add_event)
 
-        input_layout.addWidget(self.input_text, 3)
-        input_layout.addWidget(self.combo_color, 2)
-        input_layout.addWidget(btn_add, 1)
-        layout.addLayout(input_layout)
+        control_row.addWidget(self.combo_repeat, 3)
+        control_row.addWidget(self.combo_color, 2)
+        control_row.addWidget(btn_add, 2)
+        layout.addLayout(control_row)
 
+        # 하단 버튼 (삭제 및 닫기)
         btn_layout = QtWidgets.QHBoxLayout()
         btn_del = QtWidgets.QPushButton("선택한 일정 삭제")
         btn_del.setStyleSheet("""
@@ -245,6 +304,8 @@ class DayEventDialog(QtWidgets.QDialog):
 
     def load_items(self):
         self.list_widget.clear()
+
+        # 1. 구글 동기화 일정 (읽기 전용)
         g_events = self.parent_cal.events.get(self.target_date, [])
         for gev in g_events:
             item = QtWidgets.QListWidgetItem(f"🌐 [구글] {gev}")
@@ -252,6 +313,7 @@ class DayEventDialog(QtWidgets.QDialog):
             item.setForeground(QtGui.QColor("#8E8E93"))
             self.list_widget.addItem(item)
 
+        # 2. PC 단일 일정
         local_map = self.parent_cal.config.get("local_events", {})
         l_events = local_map.get(self.date_str, [])
         for idx, lev in enumerate(l_events):
@@ -263,8 +325,21 @@ class DayEventDialog(QtWidgets.QDialog):
                 c_name = "파랑"
 
             item = QtWidgets.QListWidgetItem(f"📌 [{c_name}] {title}")
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, idx)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, ("single", idx, title))
             self.list_widget.addItem(item)
+
+        # 3. PC 반복 일정
+        recurring_list = self.parent_cal.config.get("recurring_events", [])
+        for rec in recurring_list:
+            if is_recurring_on_date(rec, self.target_date):
+                title = rec.get("title", "")
+                c_name = rec.get("color", "파랑")
+                rep_type = rec.get("repeat", "")
+                rec_id = rec.get("id")
+
+                item = QtWidgets.QListWidgetItem(f"🔁 [{rep_type}][{c_name}] {title}")
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, ("recurring", rec_id, title))
+                self.list_widget.addItem(item)
 
     def add_event(self):
         txt = self.input_text.text().strip()
@@ -272,11 +347,25 @@ class DayEventDialog(QtWidgets.QDialog):
             return
 
         chosen_color = self.combo_color.currentText()
-        local_map = self.parent_cal.config.setdefault("local_events", {})
-        local_map.setdefault(self.date_str, []).append({
-            "title": txt,
-            "color": chosen_color
-        })
+        chosen_repeat = self.combo_repeat.currentText()
+
+        if chosen_repeat == "반복 안함":
+            local_map = self.parent_cal.config.setdefault("local_events", {})
+            local_map.setdefault(self.date_str, []).append({
+                "title": txt,
+                "color": chosen_color
+            })
+        else:
+            rec_list = self.parent_cal.config.setdefault("recurring_events", [])
+            rec_id = str(datetime.datetime.now().timestamp())
+            rec_list.append({
+                "id": rec_id,
+                "title": txt,
+                "color": chosen_color,
+                "repeat": chosen_repeat,
+                "start_date": self.date_str
+            })
+
         self.parent_cal.save_config()
         self.parent_cal.render_calendar()
 
@@ -287,21 +376,37 @@ class DayEventDialog(QtWidgets.QDialog):
         curr = self.list_widget.currentItem()
         if not curr:
             return
-        idx = curr.data(QtCore.Qt.ItemDataRole.UserRole)
-        if idx is None:
+
+        data = curr.data(QtCore.Qt.ItemDataRole.UserRole)
+        if not data:
             return
 
-        local_map = self.parent_cal.config.get("local_events", {})
-        if self.date_str in local_map:
-            try:
-                local_map[self.date_str].pop(idx)
-                if not local_map[self.date_str]:
-                    del local_map[self.date_str]
+        action_type, target_id, title = data
+
+        if action_type == "single":
+            local_map = self.parent_cal.config.get("local_events", {})
+            if self.date_str in local_map:
+                try:
+                    local_map[self.date_str].pop(target_id)
+                    if not local_map[self.date_str]:
+                        del local_map[self.date_str]
+                    self.parent_cal.save_config()
+                    self.parent_cal.render_calendar()
+                    self.load_items()
+                except Exception:
+                    pass
+        elif action_type == "recurring":
+            reply = QtWidgets.QMessageBox.question(
+                self, "반복 일정 삭제",
+                f"'{title}' 반복 일정을 전체 삭제하시겠습니까?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                rec_list = self.parent_cal.config.get("recurring_events", [])
+                self.parent_cal.config["recurring_events"] = [r for r in rec_list if r.get("id") != target_id]
                 self.parent_cal.save_config()
                 self.parent_cal.render_calendar()
                 self.load_items()
-            except Exception:
-                pass
 
 class OneUICalendar(QtWidgets.QWidget):
     def __init__(self):
@@ -338,6 +443,7 @@ class OneUICalendar(QtWidgets.QWidget):
             "y": None,
             "click_through": False,
             "local_events": {},
+            "recurring_events": [],
             "custom_colors": {
                 "조사": "주황",
                 "당직": "빨강",
@@ -363,6 +469,8 @@ class OneUICalendar(QtWidgets.QWidget):
                         }
                     if "local_events" not in default:
                         default["local_events"] = {}
+                    if "recurring_events" not in default:
+                        default["recurring_events"] = []
                     return default
             except Exception:
                 pass
@@ -539,6 +647,7 @@ class OneUICalendar(QtWidgets.QWidget):
         today = datetime.date.today()
 
         local_events = self.config.get("local_events", {})
+        recurring_events = self.config.get("recurring_events", [])
 
         for r in range(6):
             self.grid.setRowStretch(r, 1)
@@ -616,10 +725,13 @@ class OneUICalendar(QtWidgets.QWidget):
                     cell_layout.addWidget(lbl_day)
 
                     rendered_items = []
+
+                    # 1. 구글 일정 (키워드 자동 색상)
                     for gev in self.events.get(this_date, []):
                         bg_col, border_col = self.get_event_color(gev)
                         rendered_items.append((gev, bg_col, border_col))
 
+                    # 2. PC 단일 일정 (사용자 선택 색상)
                     d_str = this_date.strftime("%Y-%m-%d")
                     for lev in local_events.get(d_str, []):
                         if isinstance(lev, dict):
@@ -630,6 +742,14 @@ class OneUICalendar(QtWidgets.QWidget):
                             title = str(lev)
                             bg_col, border_col = self.get_event_color(title)
                         rendered_items.append((title, bg_col, border_col))
+
+                    # 3. PC 반복 일정 (사용자 선택 색상)
+                    for rec in recurring_events:
+                        if is_recurring_on_date(rec, this_date):
+                            title = rec.get("title", "")
+                            c_name = rec.get("color", "파랑")
+                            bg_col, border_col = PRESET_COLORS.get(c_name, DEFAULT_EVENT_COLOR)
+                            rendered_items.append((title, bg_col, border_col))
 
                     for title, bg_col, border_col in rendered_items[:2]:
                         ev_lbl = QtWidgets.QLabel(f" {title}")
