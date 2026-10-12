@@ -23,7 +23,7 @@ CONFIG_FILE = os.path.join(APP_DIR, "calendar_config.json")
 TOKEN_FILE = os.path.join(APP_DIR, "token.json")
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 
-# 프로그램 기본 색상 정의 (배경색, 테두리 강조색)
+# 프로그램 기본 색상 정의
 PRESET_COLORS = {
     "파랑": ("rgba(10, 132, 255, 0.35)", "#0A84FF"),
     "빨강": ("rgba(255, 69, 58, 0.35)", "#FF453A"),
@@ -53,11 +53,9 @@ GOOGLE_COLOR_REVERSE = {v: k for k, v in GOOGLE_COLOR_MAP.items()}
 DEFAULT_EVENT_COLOR = ("rgba(44, 117, 255, 0.30)", "#2C75FF")
 
 def get_credentials_path():
-    # 1. exe 실행 파일과 같은 폴더에 있는 credentials.json 확인
     local_path = os.path.join(APP_DIR, "credentials.json")
     if os.path.exists(local_path):
         return local_path
-    # 2. exe 내부 패키징 확인 (하위 호환)
     bundled_path = os.path.join(BUNDLE_DIR, "credentials.json")
     if os.path.exists(bundled_path):
         return bundled_path
@@ -313,7 +311,6 @@ class DayEventDialog(QtWidgets.QDialog):
         sync_google = self.chk_google.isChecked()
 
         if sync_google and self.parent_cal.service:
-            # 선택한 색상(chosen_color)을 구글로 전달
             success = self.parent_cal.create_google_event(txt, self.target_date, chosen_repeat, chosen_color)
             if success:
                 self.input_text.clear()
@@ -401,10 +398,10 @@ class OneUICalendar(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(150, self.setup_google_auth)
 
-        # 5분마다 최신 구글 일정 자동 동기화
+        # 30초마다 최신 구글 일정 자동 확인 (30 * 1000 ms)
         self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.fetch_google_events)
-        self.timer.start(5 * 60 * 1000)
+        self.timer.timeout.connect(lambda: self.fetch_google_events(force=False))
+        self.timer.start(30 * 1000)
 
         if self.click_through_enabled:
             QtCore.QTimer.singleShot(300, self.apply_initial_click_through)
@@ -481,12 +478,13 @@ class OneUICalendar(QtWidgets.QWidget):
                     f.write(creds.to_json())
 
             self.service = build("calendar", "v3", credentials=creds)
-            self.fetch_google_events()
+            self.fetch_google_events(force=True)
             self.tray.showMessage("One UI Calendar", "구글 캘린더 양방향 연동이 활성화되었습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 2000)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "구글 연동 오류", f"구글 계정 연결 중 문제가 발생했습니다:\n{e}")
 
-    def fetch_google_events(self):
+    def fetch_google_events(self, force=False):
+        """구글 일정을 가져옵니다. 변경 사항이 있을 때만 화면을 갱신해 깜빡임을 방지합니다."""
         if not self.service:
             return
         try:
@@ -511,7 +509,7 @@ class OneUICalendar(QtWidgets.QWidget):
             for item in items:
                 summary = item.get('summary', '(제목 없음)')
                 ev_id = item.get('id')
-                ev_color_id = item.get('colorId')  # 구글 colorId 읽기
+                ev_color_id = item.get('colorId')
                 start = item.get('start', {})
                 end = item.get('end', {})
 
@@ -531,8 +529,10 @@ class OneUICalendar(QtWidgets.QWidget):
                     dt = datetime.datetime.fromisoformat(start['dateTime'])
                     new_events.setdefault(dt.date(), []).append(event_data)
 
-            self.google_events = new_events
-            self.render_calendar()
+            # 변경점이 있거나 수동 갱신(force=True)일 때만 화면 재렌더링
+            if force or self.google_events != new_events:
+                self.google_events = new_events
+                self.render_calendar()
         except Exception:
             pass
 
@@ -542,8 +542,6 @@ class OneUICalendar(QtWidgets.QWidget):
         try:
             start_str = target_date.strftime("%Y-%m-%d")
             end_str = (target_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-            
-            # 구글 캘린더 API colorId 부여
             color_id = GOOGLE_COLOR_MAP.get(color_name, "9")
 
             body = {
@@ -568,7 +566,7 @@ class OneUICalendar(QtWidgets.QWidget):
                 body['recurrence'] = [rrule_map[repeat_type]]
 
             self.service.events().insert(calendarId='primary', body=body).execute()
-            self.fetch_google_events()
+            self.fetch_google_events(force=True)
             return True
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "구글 등록 오류", f"구글 일정 등록에 실패했습니다:\n{e}")
@@ -579,7 +577,7 @@ class OneUICalendar(QtWidgets.QWidget):
             return False
         try:
             self.service.events().delete(calendarId='primary', eventId=event_id).execute()
-            self.fetch_google_events()
+            self.fetch_google_events(force=True)
             return True
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "구글 삭제 오류", f"구글 일정 삭제에 실패했습니다:\n{e}")
@@ -650,6 +648,8 @@ class OneUICalendar(QtWidgets.QWidget):
         btn_prev = QtWidgets.QPushButton("<")
         btn_today = QtWidgets.QPushButton("오늘")
         btn_next = QtWidgets.QPushButton(">")
+        btn_refresh = QtWidgets.QPushButton("🔄")
+        btn_refresh.setToolTip("구글 일정 즉시 새로고침")
 
         btn_style = """
             QPushButton {
@@ -665,16 +665,18 @@ class OneUICalendar(QtWidgets.QWidget):
                 background-color: rgba(255, 255, 255, 0.22);
             }
         """
-        for b in (btn_prev, btn_today, btn_next):
+        for b in (btn_prev, btn_today, btn_next, btn_refresh):
             b.setStyleSheet(btn_style)
 
         btn_prev.clicked.connect(self.prev_month)
         btn_today.clicked.connect(self.go_today)
         btn_next.clicked.connect(self.next_month)
+        btn_refresh.clicked.connect(self.reload_all)
 
         header.addWidget(btn_prev)
         header.addWidget(btn_today)
         header.addWidget(btn_next)
+        header.addWidget(btn_refresh)
         layout.addLayout(header)
 
         weekdays_bar = QtWidgets.QHBoxLayout()
@@ -824,7 +826,7 @@ class OneUICalendar(QtWidgets.QWidget):
                     cell_layout.addWidget(lbl_day)
 
                     rendered_items = []
-                    # 1. 구글 캘린더 일정 (구글 colorId와 로컬 색상 매핑)
+                    # 1. 구글 캘린더 일정
                     for gev in self.google_events.get(this_date, []):
                         title = gev.get("summary", "")
                         cid = gev.get("colorId")
@@ -986,8 +988,7 @@ class OneUICalendar(QtWidgets.QWidget):
 
     def reload_all(self):
         self.config = self.load_config()
-        self.fetch_google_events()
-        self.render_calendar()
+        self.fetch_google_events(force=True)
         self.tray.showMessage("One UI Calendar", "구글 일정을 최신 상태로 새로고침했습니다.", QtWidgets.QSystemTrayIcon.MessageIcon.Information, 1500)
 
     def toggle_click_through(self):
